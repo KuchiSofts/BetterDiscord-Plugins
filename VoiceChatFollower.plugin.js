@@ -1,7 +1,7 @@
 /**
  * @name VoiceChatFollower
  * @author KuchiS
- * @version 1.0
+ * @version 1.1
  * @description Adds a "Follow Me" checkbox to the user context menu in voice chat, allowing you to automatically follow a user to the voice channel they join.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
@@ -101,83 +101,147 @@ const {
 } = BdApi.ContextMenu;
 
 let followedUserId = null;
-let followTimeout = null;
+let followInterval = null;
+
+// Configuration options
+let config = {
+    checkInterval: 2000, // Interval duration for checking user's voice channel (in milliseconds)
+    inactivityTimeout: 60 // Inactivity timeout duration (in seconds)
+};
 
 const css = `
-.container-VoiceChatFollower {
-  margin: 5px 8px;
-  padding: 3px 6px;
-  background: var(--background-primary);
-  border-radius: 3px;
-  display: flex;
+.VoiceChatFollower-settings {
+    padding: 20px;
+    background-color: var(--background-secondary);
 }
 
-.checkbox-VoiceChatFollower {
-  margin-right: 8px;
+.VoiceChatFollower-settings h3 {
+    margin-bottom: 20px;
+    color: var(--header-primary);
 }
 
-.label-VoiceChatFollower {
-  color: var(--interactive-normal);
-  font-weight: 500;
+.setting-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.setting-label {
+    flex: 1;
+    margin-right: 10px;
+}
+
+.setting-label label {
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+.setting-help {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 5px;
+}
+
+.setting-input input[type="number"] {
+    width: 80px;
+    padding: 5px;
+    border-radius: 3px;
+    border: 1px solid var(--background-tertiary);
+    background-color: var(--background-secondary-alt);
+    color: var(--text-normal);
 }
 `;
 
 const VoiceStateStore = byName$1("VoiceStateStore");
-const VoiceChannelStore = byName$1("GuildChannelsStore");
-const VoiceChannelActions = byName$1("VoiceChannelActions");
+const ChannelStore = byName$1("ChannelStore");
+const VoiceChannelActions = find(m => m.selectVoiceChannel);
 
 function findUserVoiceChannel(userId) {
-    const voiceChannels = document.querySelectorAll(".containerDefault__3187b");
-    for (const channelElement of voiceChannels) {
-        const userElement = channelElement.querySelector(".voiceUser__0470a");
-        if (userElement) {
-            const avatarElement = userElement.querySelector(".content_b60865 .userAvatar_c4f005");
-            if (avatarElement && avatarElement.style.backgroundImage.includes(userId)) {
-                const linkElement = channelElement.querySelector(".link__95dc0");
-                if (linkElement) {
-                    const channelId = linkElement.getAttribute("data-list-item-id").replace("channels___", "");
-                    if (channelId) {
-                        //linkElement.click();
-                        return linkElement;
-                    }
-                }
-            }
+  const voiceChannels = document.querySelectorAll(".containerDefault__3187b");
+  for (const channelElement of voiceChannels) {
+    const userElements = channelElement.querySelectorAll(".voiceUser__0470a");
+    for (const userElement of userElements) {
+      const avatarElement = userElement.querySelector(".content_b60865 .userAvatar_c4f005");
+      if (avatarElement && avatarElement.style.backgroundImage.includes(userId)) {
+        const linkElement = channelElement.querySelector(".link__95dc0");
+        if (linkElement) {
+          const channelId = linkElement.getAttribute("data-list-item-id").replace("channels___", "");
+          if (channelId) {
+            return {
+              element: linkElement,
+              id: channelId,
+              userElement: userElement
+            };
+          }
         }
+      }
     }
-    return null;
+  }
+  return null;
 }
 
 function followUser(userId) {
-    if (followedUserId === userId) return;
+  if (followedUserId === userId) return;
+
+  try {
+    stopFollowing(); // Stop following the current user (if any)
 
     followedUserId = userId;
-    clearTimeout(followTimeout);
 
     const voiceChannel = findUserVoiceChannel(userId);
-	//log(`userid: ${userId} 148 ---- vc : ${voiceChannel}`);
     if (voiceChannel) {
-        voiceChannel.click();
-		log(`userid: ${voiceChannel.id} 151`);
+      voiceChannel.element.click();
+      voiceChannel.userElement.classList.add("followedUser");
+      log(`Joined voice channel: ${voiceChannel.id}`);
+    } else {
+      throw new Error(`Voice channel not found for user ${userId}`);
     }
 
-    const handleVoiceStateUpdate = () => {
-        const newVoiceChannel = findUserVoiceChannel(userId);
-        if (newVoiceChannel && newVoiceChannel.id !== voiceChannel?.id) {
-            VoiceChannelActions.selectVoiceChannel(newVoiceChannel.id);
+    let lastSeenTime = Date.now();
+
+    followInterval = setInterval(() => {
+      const currentVoiceChannel = findUserVoiceChannel(userId);
+      if (currentVoiceChannel) {
+        const channelName = currentVoiceChannel.element.querySelector(".name__8d1ec")?.textContent;
+        log(`User ${userId} is currently in voice channel ${channelName} (${currentVoiceChannel.id})`);
+
+        if (!currentVoiceChannel.userElement.classList.contains("followedUser")) {
+          currentVoiceChannel.userElement.classList.add("followedUser");
         }
-    };
 
-    VoiceStateStore.addChangeListener(handleVoiceStateUpdate);
+        if (currentVoiceChannel.id !== voiceChannel?.id) {
+          VoiceChannelActions.selectVoiceChannel(currentVoiceChannel.id);
+          log(`Joined new voice channel: ${currentVoiceChannel.id}`);
+        }
 
-    followTimeout = setTimeout(() => {
-        VoiceStateStore.removeChangeListener(handleVoiceStateUpdate);
-        followedUserId = null;
-    }, 10000);
+        lastSeenTime = Date.now();
+      } else {
+        log(`User ${userId} is not in any voice channel`);
+
+        const elapsedTime = (Date.now() - lastSeenTime) / 1000; // Elapsed time in seconds
+        if (elapsedTime > config.inactivityTimeout) {
+          stopFollowing();
+          log(`Stopped following user ${userId} due to inactivity`);
+        }
+      }
+    }, config.checkInterval);
+  } catch (error) {
+    console.error("Error in followUser:", error);
+  }
 }
 
 function stopFollowing() {
+  try {
+    const followedUserElement = document.querySelector(".voiceUser__0470a.followedUser");
+    if (followedUserElement) {
+      followedUserElement.classList.remove("followedUser");
+    }
+    
     followedUserId = null;
-    clearTimeout(followTimeout);
+    clearInterval(followInterval);
+  } catch (error) {
+    console.error("Error in stopFollowing:", error);
+  }
 }
 
 const createPlugin = (plugin) => (meta) => {
@@ -186,6 +250,7 @@ const createPlugin = (plugin) => (meta) => {
         start,
         stop,
         styles,
+        getSettingsPanel
     } = (plugin instanceof Function ? plugin(meta) : plugin);
     return {
         start() {
@@ -200,16 +265,12 @@ const createPlugin = (plugin) => (meta) => {
             stop?.();
             log("Disabled");
         },
+        getSettingsPanel: getSettingsPanel
     };
 };
 
 const index = createPlugin({
     start() {
-        const experiment = ExperimentStore.getUserExperimentDescriptor("2022-09_remote_audio_settings");
-        if (experiment) {
-            experiment.bucket = 0;
-        }
-
         const useUserVolumeItemFilter = bySource("user-volume");
 
         waitFor(useUserVolumeItemFilter, {
@@ -233,6 +294,10 @@ const index = createPlugin({
                                     } else {
                                         followUser(userId);
                                     }
+                                    const userContext = document.querySelector("#user-context");
+                                    if (userContext) {
+                                        userContext.remove();
+                                    }
                                 }
                             }),
                             result
@@ -244,7 +309,46 @@ const index = createPlugin({
             });
         });
     },
-    styles: css
+    styles: css,
+getSettingsPanel: () => {
+    return [
+        React.createElement("div", { className: "VoiceChatFollower-settings" },
+            React.createElement("h3", null, "VoiceChatFollower Settings"),
+            React.createElement("div", { className: "setting-item" },
+                React.createElement("div", { className: "setting-label" },
+                    React.createElement("label", { htmlFor: "checkInterval" }, "Check Interval (ms)"),
+                    React.createElement("div", { className: "setting-help" }, "The interval at which to check the user's voice channel.")
+                ),
+                React.createElement("div", { className: "setting-input" },
+                    React.createElement("input", {
+                        id: "checkInterval",
+                        type: "number",
+                        value: config.checkInterval,
+                        onChange: (e) => {
+                            config.checkInterval = parseInt(e.target.value);
+                        }
+                    })
+                )
+            ),
+            React.createElement("div", { className: "setting-item" },
+                React.createElement("div", { className: "setting-label" },
+                    React.createElement("label", { htmlFor: "inactivityTimeout" }, "Inactivity Timeout (s)"),
+                    React.createElement("div", { className: "setting-help" }, "The duration of inactivity after which to stop following the user.")
+                ),
+                React.createElement("div", { className: "setting-input" },
+                    React.createElement("input", {
+                        id: "inactivityTimeout",
+                        type: "number",
+                        value: config.inactivityTimeout,
+                        onChange: (e) => {
+                            config.inactivityTimeout = parseInt(e.target.value);
+                        }
+                    })
+                )
+            )
+        )
+    ];
+}
 });
 
 module.exports = index;
