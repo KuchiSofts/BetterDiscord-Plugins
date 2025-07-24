@@ -1,48 +1,28 @@
 /**
  * @name SoundBooster
  * @author KuchiS
- * @version 2.0
+ * @version 3.0
  * @description Manually adjust and save users' and streams' volumes, extending beyond the 200% limit. Adds "Hide Original Volume" setting to remove Discord's built-in slider from the context menu.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
  * @source https://github.com/KuchiSofts/BetterDiscord-Plugins/blob/main/SoundBooster.plugin.js
- **/
+ */
 
 /*@cc_on @if (@_jscript)
 var pluginName = WScript.ScriptName.split(".")[0];
 var shell = WScript.CreateObject("WScript.Shell");
-shell.Popup(
-    "Do NOT run scripts from the internet with the Windows Script Host!\nMove this file to your BetterDiscord plugins folder.",
-    0,
-    pluginName + ": Warning!",
-    0x1030
-);
+shell.Popup("Do NOT run scripts from the internet with the Windows Script Host!\nMove this file to your BetterDiscord plugins folder.",0,pluginName + ": Warning!",0x1030);
 var fso = new ActiveXObject("Scripting.FileSystemObject");
 var pluginsPath = shell.expandEnvironmentStrings("%appdata%\\BetterDiscord\\plugins");
 if (!fso.FolderExists(pluginsPath)) {
-    var popup = shell.Popup(
-        "Unable to find BetterDiscord on your computer.\nOpen the download page of BetterDiscord?",
-        0,
-        pluginName + ": BetterDiscord not found",
-        0x34
-    );
+    var popup = shell.Popup("Unable to find BetterDiscord on your computer.\nOpen the download page of BetterDiscord?",0,pluginName + ": BetterDiscord not found",0x34);
     if (popup === 6) {
         shell.Exec("explorer \"https://betterdiscord.app\"");
     }
 } else if (WScript.ScriptFullName === pluginsPath + "\\" + WScript.ScriptName) {
-    shell.Popup(
-        "This plugin is already in the correct folder.\nNavigate to the \"Plugins\" settings tab in Discord and enable it there.",
-        0,
-        pluginName,
-        0x40
-    );
+    shell.Popup("This plugin is already in the correct folder.\nNavigate to the \"Plugins\" settings tab in Discord and enable it there.",0,pluginName,0x40);
 } else {
-    var popup2 = shell.Popup(
-        "Open the BetterDiscord plugins folder?",
-        0,
-        pluginName,
-        0x34
-    );
+    var popup2 = shell.Popup("Open the BetterDiscord plugins folder?",0,pluginName,0x34);
     if (popup2 === 6) {
         shell.Exec("explorer " + pluginsPath);
     }
@@ -56,17 +36,22 @@ WScript.Quit();
 /*                              Plugin Boilerplate                             */
 /* -------------------------------------------------------------------------- */
 
+const moduleCache = new Map();
+const cachedFilters = new Map();
+const promiseCache = new Map(); // Cache for async module lookups
 let meta = null;
+
 const getMeta = () => {
     if (meta) return meta;
     throw Error("Accessing meta before initialization");
 };
+
 const setMeta = (newMeta) => {
     meta = newMeta;
 };
 
 const load = (key) => BdApi.Data.load(getMeta().name, key);
-const save = (key, value) => BdApi.setData(getMeta().name, key, value);
+const save = (key, value) => BdApi.Data.save(getMeta().name, key, value);
 
 const checkObjectValues = (target) =>
     target !== window &&
@@ -74,21 +59,36 @@ const checkObjectValues = (target) =>
     target.constructor?.prototype !== target;
 
 const byName = (name) => {
-    return (target) =>
-        (target?.displayName ?? target?.constructor?.displayName) === name;
+    const cacheKey = `byName:${name}`;
+    if (cachedFilters.has(cacheKey)) return cachedFilters.get(cacheKey);
+    const filter = (target) => (target?.displayName ?? target?.constructor?.displayName) === name;
+    cachedFilters.set(cacheKey, filter);
+    return filter;
 };
+
 const byKeys = (...keys) => {
-    return (target) =>
-        target instanceof Object && keys.every((key) => key in target);
+    const cacheKey = `byKeys:${keys.join(',')}`;
+    if (cachedFilters.has(cacheKey)) return cachedFilters.get(cacheKey);
+    const filter = (target) => target instanceof Object && keys.every((key) => key in target);
+    cachedFilters.set(cacheKey, filter);
+    return filter;
 };
+
 const byProtos = (...protos) => {
-    return (target) =>
+    const cacheKey = `byProtos:${protos.join(',')}`;
+    if (cachedFilters.has(cacheKey)) return cachedFilters.get(cacheKey);
+    const filter = (target) =>
         target instanceof Object &&
         target.prototype instanceof Object &&
         protos.every((proto) => proto in target.prototype);
+    cachedFilters.set(cacheKey, filter);
+    return filter;
 };
+
 const bySource = (...fragments) => {
-    return (target) => {
+    const cacheKey = `bySource:${fragments.join(',')}`;
+    if (cachedFilters.has(cacheKey)) return cachedFilters.get(cacheKey);
+    const filter = (target) => {
         while (target instanceof Object && "$$typeof" in target) {
             target = target.render ?? target.type;
         }
@@ -103,6 +103,8 @@ const bySource = (...fragments) => {
         }
         return false;
     };
+    cachedFilters.set(cacheKey, filter);
+    return filter;
 };
 
 const confirm = (title, content, options = {}) =>
@@ -139,16 +141,33 @@ const mappedProxy = (target, mapping) => {
     });
 };
 
-const find = (filter, { resolve = true, entries = false } = {}) =>
-    BdApi.Webpack.getModule(filter, {
+const find = (filter, { resolve = true, entries = false, cacheKey = "" } = {}) => {
+    if (cacheKey && moduleCache.has(cacheKey)) {
+        return moduleCache.get(cacheKey);
+    }
+    
+    const result = BdApi.Webpack.getModule(filter, {
         defaultExport: resolve,
         searchExports: entries
     });
+    
+    if (cacheKey && result) {
+        moduleCache.set(cacheKey, result);
+    }
+    
+    return result;
+};
+
 const resolveKey = (target, filter) => [
     target,
     Object.entries(target ?? {}).find(([, value]) => filter(value))?.[0]
 ];
-const demangle = (mapping, required, proxy = false) => {
+
+const demangle = (mapping, required, proxy = false, cacheKey = "") => {
+    if (cacheKey && moduleCache.has(cacheKey)) {
+        return moduleCache.get(cacheKey);
+    }
+
     const req = required ?? Object.keys(mapping);
     const found = find(
         (target) =>
@@ -157,46 +176,85 @@ const demangle = (mapping, required, proxy = false) => {
                 Object.values(target).some((value) => mapping[reqKey](value))
             )
     );
-    return proxy
-        ? mappedProxy(
-              found,
-              Object.fromEntries(
-                  Object.entries(mapping).map(([key, filt]) => [
-                      key,
-                      Object.entries(found ?? {}).find(([, val]) => filt(val))?.[0]
-                  ])
-              )
-          )
-        : Object.fromEntries(
-              Object.entries(mapping).map(([key, filt]) => [
-                  key,
-                  Object.values(found ?? {}).find((val) => filt(val))
-              ])
-          );
+    
+    let result;
+    if (proxy) {
+        result = mappedProxy(
+            found,
+            Object.fromEntries(
+                Object.entries(mapping).map(([key, filt]) => [
+                    key,
+                    Object.entries(found ?? {}).find(([, val]) => filt(val))?.[0]
+                ])
+            )
+        );
+    } else {
+        result = Object.fromEntries(
+            Object.entries(mapping).map(([key, filt]) => [
+                key,
+                Object.values(found ?? {}).find((val) => filt(val))
+            ])
+        );
+    }
+    
+    if (cacheKey && result) {
+        moduleCache.set(cacheKey, result);
+    }
+    
+    return result;
 };
 
 let controller = new AbortController();
-const waitFor = (filter, { resolve = true, entries = false } = {}) =>
-    BdApi.Webpack.waitForModule(filter, {
+const waitFor = (filter, { resolve = true, entries = false, cacheKey = "" } = {}) => {
+    if (cacheKey && moduleCache.has(cacheKey)) {
+        return Promise.resolve(moduleCache.get(cacheKey));
+    }
+    
+    // Cache promises to avoid duplicate lookups
+    const promiseKey = `${cacheKey || 'unknown'}_${resolve}_${entries}`;
+    if (promiseCache.has(promiseKey)) {
+        return promiseCache.get(promiseKey);
+    }
+    
+    const promise = BdApi.Webpack.waitForModule(filter, {
         signal: controller.signal,
         defaultExport: resolve,
         searchExports: entries
+    }).then(result => {
+        if (cacheKey && result) {
+            moduleCache.set(cacheKey, result);
+        }
+        promiseCache.delete(promiseKey); // Clear promise cache after resolution
+        return result;
+    }).catch(error => {
+        promiseCache.delete(promiseKey); // Clear on error too
+        throw error;
     });
+    
+    promiseCache.set(promiseKey, promise);
+    return promise;
+};
+
 const abort = () => {
     controller.abort();
     controller = new AbortController();
+    promiseCache.clear(); // Clear promise cache on abort
 };
 
 const COLOR = "#3a71c1";
-const print = (output, ...data) =>
-    output(
-        `%c[${getMeta().name}] %c${getMeta().version ? `(v${getMeta().version})` : ""}`,
-        `color: ${COLOR}; font-weight: 700;`,
-        "color: #666; font-size: .8em;",
-        ...data
-    );
-const log = (...data) => print(console.log, ...data);
-const warn = (...data) => print(console.warn, ...data);
+const createLoggers = () => {
+    const nameStr = getMeta().name;
+    const versionStr = getMeta().version ? `(v${getMeta().version})` : "";
+    const formatStr = `%c[${nameStr}] %c${versionStr}`;
+    const styles = [`color: ${COLOR}; font-weight: 700;`, "color: #666; font-size: .8em;"];
+    
+    return {
+        log: (...data) => console.log(formatStr, ...styles, ...data),
+        warn: (...data) => console.warn(formatStr, ...styles, ...data)
+    };
+};
+
+let logger;
 
 const patch = (type, object, method, callback, options) => {
     const original = object?.[method];
@@ -216,10 +274,11 @@ const patch = (type, object, method, callback, options) => {
             : (...args) => callback(cancel, original, ...args)
     );
     if (!options.silent) {
-        log(`Patched ${options.name ?? String(method)}`);
+        logger.log(`Patched ${options.name ?? String(method)}`);
     }
     return cancel;
 };
+
 const after = (object, method, callback, options = {}) =>
     patch(
         "after",
@@ -240,7 +299,7 @@ const unpatchAll = () => {
         }
         menuPatches = [];
         BdApi.Patcher.unpatchAll(getMeta().name);
-        log("Unpatched all");
+        logger.log("Unpatched all");
     }
 };
 
@@ -249,205 +308,355 @@ const inject = (styles) => {
         BdApi.DOM.addStyle(getMeta().name, styles);
     }
 };
+
 const clear = () => BdApi.DOM.removeStyle(getMeta().name);
 
 /* -------------------------------------------------------------------------- */
 /*                           Grab External Modules                            */
 /* -------------------------------------------------------------------------- */
 
-const Dispatcher = find(byKeys("dispatch", "subscribe"));
-
-const {
-    default: Legacy,
-    Dispatcher: LegacyDispatcher,
-    Store,
-    BatchedStoreListener,
-    useStateFromStores
-} = demangle(
-    {
-        default: byKeys("Store", "connectStores"),
-        Dispatcher: byProtos("dispatch"),
-        Store: byProtos("emitChange"),
-        BatchedStoreListener: byProtos("attach", "detach"),
-        useStateFromStores: bySource("useStateFromStores")
-    },
-    ["Store", "Dispatcher", "useStateFromStores"]
-);
-
-const MediaEngineStore = find(byName("MediaEngineStore"));
-const MediaEngineActions = find(byKeys(["setLocalVolume"]));
-
-const { React } = BdApi;
-const { TextInput } = BdApi.UI;
-const { getData, setData } = BdApi;
-
-const classNames = find(
-    (exports) =>
-        exports instanceof Object &&
-        exports.default === exports &&
-        Object.keys(exports).length === 1
-);
-
-// Attempt to locate Discord's AudioConvert
-let AttemptAudioConvert = demangle({
-    amplitudeToPerceptual: bySource("Math.log10"),
-    perceptualToAmplitude: bySource("Math.pow(10")
-});
-
-// Fallback if not found
-if (
-    !AttemptAudioConvert ||
-    typeof AttemptAudioConvert.amplitudeToPerceptual !== "function" ||
-    typeof AttemptAudioConvert.perceptualToAmplitude !== "function"
-) {
-    warn("AudioConvert not found. Using fallback math for volume conversions.");
-    AttemptAudioConvert = {
+const fetchDiscordModules = () => {
+    const Dispatcher = find(byKeys("dispatch", "subscribe"), { cacheKey: "Dispatcher" });
+    
+    const LegacyModules = demangle(
+        {
+            default: byKeys("Store", "connectStores"),
+            Dispatcher: byProtos("dispatch"),
+            Store: byProtos("emitChange"),
+            BatchedStoreListener: byProtos("attach", "detach"),
+            useStateFromStores: bySource("useStateFromStores")
+        },
+        ["Store", "Dispatcher", "useStateFromStores"],
+        false,
+        "LegacyModules"
+    );
+    
+    const MediaEngineStore = find(byName("MediaEngineStore"), { cacheKey: "MediaEngineStore" });
+    const MediaEngineActions = find(byKeys(["setLocalVolume"]), { cacheKey: "MediaEngineActions" });
+    
+    const { React } = BdApi;
+    const { TextInput } = BdApi.UI;
+    
+    let AudioConvert;
+    try {
+        const AttemptAudioConvert = demangle({
+            amplitudeToPerceptual: bySource("Math.log10"),
+            perceptualToAmplitude: bySource("Math.pow(10")
+        }, null, false, "AudioConvert");
+        
+        if (
+            !AttemptAudioConvert ||
+            typeof AttemptAudioConvert.amplitudeToPerceptual !== "function" ||
+            typeof AttemptAudioConvert.perceptualToAmplitude !== "function"
+        ) {
+            throw new Error("Invalid AudioConvert module");
+        }
+        
+        AudioConvert = AttemptAudioConvert;
+    } catch (err) {
+        logger.warn("AudioConvert not found. Using fallback math for volume conversions.");
+        const log10 = Math.log10;
+        const pow10 = x => Math.pow(10, x / 20);
+        
+        AudioConvert = {
+            amplitudeToPerceptual: amplitude => 20 * log10(amplitude),
+            perceptualToAmplitude: db => pow10(db)
+        };
+    }
+    
+    // Use more efficient caching with size limits
+    const MAX_CACHE_SIZE = 100;
+    const percCache = new Map();
+    const ampCache = new Map();
+    
+    const cachedAudioConvert = {
         amplitudeToPerceptual(amplitude) {
-            // dB => 20 * log10(amplitude)
-            return 20 * Math.log10(amplitude);
+            // Round to reduce cache misses for similar values
+            const roundedAmp = Math.round(amplitude * 1000) / 1000;
+            if (percCache.has(roundedAmp)) {
+                return percCache.get(roundedAmp);
+            }
+            const result = AudioConvert.amplitudeToPerceptual(amplitude);
+            
+            // Limit cache size to prevent memory bloat
+            if (percCache.size >= MAX_CACHE_SIZE) {
+                const firstKey = percCache.keys().next().value;
+                percCache.delete(firstKey);
+            }
+            percCache.set(roundedAmp, result);
+            return result;
         },
         perceptualToAmplitude(db) {
-            // amplitude => 10^(db / 20)
-            return Math.pow(10, db / 20);
+            const roundedDb = Math.round(db);
+            if (ampCache.has(roundedDb)) {
+                return ampCache.get(roundedDb);
+            }
+            const result = AudioConvert.perceptualToAmplitude(db);
+            
+            if (ampCache.size >= MAX_CACHE_SIZE) {
+                const firstKey = ampCache.keys().next().value;
+                ampCache.delete(firstKey);
+            }
+            ampCache.set(roundedDb, result);
+            return result;
+        },
+        clearCache() {
+            percCache.clear();
+            ampCache.clear();
         }
     };
-}
-
-const AudioConvert = AttemptAudioConvert;
-
-// Common UI modules
-const Common = BdApi.Webpack.getModule((m) => m?.Button && m?.Switch && m?.Select);
-const Button = Common?.Button ?? (() => null);
-const Flex = BdApi.Webpack.getModule((m) => m?.Child && m?.Justify, { searchExports: true });
-const FormComponents = BdApi.Webpack.getModule(
-    (m) => m?.FormSection && m?.FormItem && m?.FormTitle
-);
-const {
-    FormSection,
-    FormItem,
-    FormTitle,
-    FormText,
-    FormLabel,
-    FormDivider,
-    FormSwitch,
-    FormNotice
-} = FormComponents ?? {};
-const margins = BdApi.Webpack.getModule((m) => m?.marginBottom40 && m?.marginTop4);
-
-// ContextMenu items
-const {
-    Menu,
-    Group: MenuGroup,
-    Item: MenuItem,
-    Separator: MenuSeparator,
-    CheckboxItem: MenuCheckboxItem,
-    RadioItem: MenuRadioItem,
-    ControlItem: MenuControlItem
-} = BdApi.ContextMenu;
+    
+    const Common = BdApi.Webpack.getModule((m) => m?.Button && m?.Switch && m?.Select);
+    const Button = Common?.Button ?? (() => null);
+    const Flex = BdApi.Webpack.getModule((m) => m?.Child && m?.Justify, { searchExports: true });
+    const FormComponents = BdApi.Webpack.getModule(
+        (m) => m?.FormSection && m?.FormItem && m?.FormTitle
+    );
+    
+    const {
+        FormSection,
+        FormItem,
+        FormTitle,
+        FormText,
+        FormLabel,
+        FormDivider,
+        FormSwitch,
+        FormNotice
+    } = FormComponents ?? {};
+    
+    const margins = BdApi.Webpack.getModule((m) => m?.marginBottom40 && m?.marginTop4);
+    
+    const ContextMenu = BdApi.ContextMenu;
+    
+    return {
+        Dispatcher,
+        LegacyModules,
+        MediaEngineStore,
+        MediaEngineActions,
+        React,
+        TextInput,
+        AudioConvert: cachedAudioConvert,
+        Button,
+        Flex,
+        FormComponents: {
+            FormSection,
+            FormItem,
+            FormTitle,
+            FormText,
+            FormLabel,
+            FormDivider,
+            FormSwitch,
+            FormNotice
+        },
+        margins,
+        ContextMenu
+    };
+};
 
 /* -------------------------------------------------------------------------- */
 /*                               Settings Store                               */
 /* -------------------------------------------------------------------------- */
 
-const SettingsContainer = ({ name, children, onReset }) =>
-    React.createElement(
-        FormSection,
-        null,
-        children,
-        onReset
-            ? React.createElement(
-                  React.Fragment,
-                  null,
-                  React.createElement(FormDivider, {
-                      className: classNames(margins.marginTop20, margins.marginBottom20)
-                  }),
-                  React.createElement(
-                      Flex,
-                      { justify: Flex.Justify.END },
+const createSettingsContainer = ({ React, FormSection, FormDivider, Flex, Button, margins }) => {
+    return ({ name, children, onReset }) =>
+        React.createElement(
+            FormSection,
+            null,
+            children,
+            onReset
+                ? React.createElement(
+                      React.Fragment,
+                      null,
+                      React.createElement(FormDivider, {
+                          className: margins ? `${margins.marginTop20} ${margins.marginBottom20}` : ""
+                      }),
                       React.createElement(
-                          Button,
-                          {
-                              size: Button.Sizes.SMALL,
-                              onClick: () =>
-                                  confirm(name, "Reset all settings?", {
-                                      onConfirm: () => onReset()
-                                  })
-                          },
-                          "Reset"
+                          Flex,
+                          { justify: Flex.Justify.END },
+                          React.createElement(
+                              Button,
+                              {
+                                  size: Button.Sizes.SMALL,
+                                  onClick: () =>
+                                      confirm(name, "Reset all settings?", {
+                                          onConfirm: () => onReset()
+                                      })
+                              },
+                              "Reset"
+                          )
                       )
                   )
-              )
-            : null
-    );
+                : null
+        );
+};
 
 class SettingsStore {
     constructor(defaults, onLoad) {
         this.listeners = new Set();
-        this.update = (settings) => {
-            Object.assign(
-                this.current,
-                typeof settings === "function" ? settings(this.current) : settings
-            );
-            this._dispatch(true);
-        };
-        this.addReactChangeListener = this.addListener;
-        this.removeReactChangeListener = this.removeListener;
         this.defaults = defaults;
         this.onLoad = onLoad;
+        this.current = { ...defaults };
+        this.saveTimeout = null;
+        
+        this.update = this.update.bind(this);
+        this.addListener = this.addListener.bind(this);
+        this.removeListener = this.removeListener.bind(this);
+        this.addReactChangeListener = this.addListener;
+        this.removeReactChangeListener = this.removeListener;
+        this._debouncedSave = this._debouncedSave.bind(this);
     }
+
+    _debouncedSave() {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+        }
+        this.saveTimeout = setTimeout(() => {
+            try {
+                // Only save changed keys to reduce I/O
+                BdApi.Data.save(getMeta().name, "settings", this.current);
+            } catch (error) {
+                logger.warn("Save failed:", error);
+            }
+            this.saveTimeout = null;
+        }, 100); // Reduced debounce time for better responsiveness
+    }
+
+    update(settings) {
+        const newSettings = typeof settings === "function" 
+            ? settings(this.current) 
+            : settings;
+            
+        let hasChanges = false;
+        for (const key in newSettings) {
+            if (this.current[key] !== newSettings[key]) {
+                this.current[key] = newSettings[key];
+                hasChanges = true;
+            }
+        }
+        
+        if (hasChanges) {
+            this._dispatch(true);
+        }
+    }
+
     load() {
-        this.current = {
-            ...this.defaults,
-            ...getData(getMeta().name, "settings")
-        };
+        try {
+            const savedSettings = BdApi.Data.load(getMeta().name, "settings") || {};
+            
+            for (const key in this.defaults) {
+                if (key in savedSettings) {
+                    this.current[key] = savedSettings[key];
+                }
+            }
+        } catch (error) {
+            logger.warn("Failed to load settings:", error);
+        }
+        
         this.onLoad?.();
         this._dispatch(false);
     }
+
     _dispatch(shouldSave) {
-        for (const listener of this.listeners) {
-            listener(this.current);
+        if (this.listeners.size > 0) {
+            // Use microtask instead of requestAnimationFrame for faster updates
+            Promise.resolve().then(() => {
+                for (const listener of this.listeners) {
+                    try {
+                        listener(this.current);
+                    } catch (error) {
+                        logger.warn("Settings listener error:", error);
+                    }
+                }
+            });
         }
+        
         if (shouldSave) {
-            save("settings", this.current);
+            this._debouncedSave();
         }
     }
+
     reset() {
         this.current = { ...this.defaults };
         this._dispatch(true);
     }
+
     delete(...keys) {
+        let changed = false;
         for (const key of keys) {
-            delete this.current[key];
+            if (key in this.current) {
+                delete this.current[key];
+                changed = true;
+            }
         }
-        this._dispatch(true);
+        
+        if (changed) {
+            this._dispatch(true);
+        }
     }
+
     useCurrent() {
-        return useStateFromStores([this], () => this.current, undefined, () => false);
+        return this.LegacyModules.useStateFromStores([this], () => this.current, undefined, () => false);
     }
+
     useSelector(selector, deps, compare) {
-        return useStateFromStores([this], () => selector(this.current), deps, compare);
+        return this.LegacyModules.useStateFromStores([this], () => selector(this.current), deps, compare);
     }
+
     useState() {
-        return useStateFromStores([this], () => [this.current, this.update]);
+        return this.LegacyModules.useStateFromStores([this], () => [this.current, this.update]);
     }
+
     useStateWithDefaults() {
-        return useStateFromStores([this], () => [this.current, this.defaults, this.update]);
+        return this.LegacyModules.useStateFromStores([this], () => [this.current, this.defaults, this.update]);
     }
+
     useListener(listener, deps) {
         React.useEffect(() => {
             this.addListener(listener);
             return () => this.removeListener(listener);
         }, deps ?? [listener]);
     }
+
     addListener(listener) {
         this.listeners.add(listener);
         return listener;
     }
+
     removeListener(listener) {
         this.listeners.delete(listener);
     }
+
     removeAllListeners() {
         this.listeners.clear();
+    }
+    
+    setDependencies(LegacyModules) {
+        this.LegacyModules = LegacyModules;
+    }
+
+    exportSettings() {
+        return JSON.stringify(this.current, null, 2);
+    }
+
+    importSettings(jsonString) {
+        try {
+            const importedData = JSON.parse(jsonString);
+            
+            const validData = {};
+            for (const key in this.defaults) {
+                if (key in importedData) {
+                    validData[key] = importedData[key];
+                }
+            }
+            
+            this.current = { ...this.defaults, ...validData };
+            this._dispatch(true);
+            
+            return true;
+        } catch (error) {
+            logger.warn("Failed to import settings:", error);
+            return false;
+        }
     }
 }
 
@@ -455,12 +664,17 @@ const createSettings = (defaults, onLoad) => new SettingsStore(defaults, onLoad)
 
 const createPlugin = (plugin) => (metaData) => {
     setMeta(metaData);
+    logger = createLoggers();
+    
     const { start, stop, styles, Settings, SettingsPanel } =
         plugin instanceof Function ? plugin(metaData) : plugin;
     Settings?.load();
+    
+    const ReactInstance = BdApi.React;
+    
     return {
         start() {
-            log("Enabled");
+            logger.log("Enabled");
             inject(styles);
             start?.();
         },
@@ -469,19 +683,17 @@ const createPlugin = (plugin) => (metaData) => {
             unpatchAll();
             clear();
             stop?.();
-            log("Disabled");
+            logger.log("Disabled");
         },
-        getSettingsPanel: SettingsPanel
-            ? () =>
-                  React.createElement(
-                      SettingsContainer,
-                      {
-                          name: metaData.name,
-                          onReset: Settings ? () => Settings.reset() : null
-                      },
-                      React.createElement(SettingsPanel, null)
-                  )
-            : null
+        getSettingsPanel: () => {
+            if (!SettingsPanel) return null;
+            
+            const panel = ReactInstance.createElement("div", { 
+                style: { padding: "10px" } 
+            }, ReactInstance.createElement(SettingsPanel));
+            
+            return panel;
+        }
     };
 };
 
@@ -495,50 +707,69 @@ const Settings = createSettings(
         maxUserVolume: 1000,
         maxStreamVolume: 1000,
         defaultUserVolume: 0,
+        defaultStreamVolume: 100,
         volumeStep: 100,
         mouseWheelStep: 100,
         disableExperiment: 0,
-        hideOriginalVolume: false // NEW setting
+        hideOriginalVolume: false
     },
     null
 );
 
 const hasOverride = (userId, context) =>
-    context in (Settings.current.volumeOverrides[userId] ?? {});
+    userId in Settings.current.volumeOverrides && 
+    context in Settings.current.volumeOverrides[userId];
 
 const updateVolumeOverride = (userId, volume, context) => {
     const isNew = !hasOverride(userId, context);
+    
     if (volume > 5) {
-        Settings.update(({ volumeOverrides }) => {
-            volumeOverrides[userId] = {
-                ...volumeOverrides[userId],
-                [context]: volume
-            };
+        Settings.update(current => {
+            const volumeOverrides = { ...current.volumeOverrides };
+            
+            if (!volumeOverrides[userId]) {
+                volumeOverrides[userId] = {};
+            }
+            
+            volumeOverrides[userId] = { ...volumeOverrides[userId], [context]: volume };
             return { volumeOverrides };
         });
     } else if (hasOverride(userId, context)) {
-        Settings.update(({ volumeOverrides }) => {
-            delete volumeOverrides[userId][context];
-            if (Object.keys(volumeOverrides[userId]).length === 0) {
-                delete volumeOverrides[userId];
+        Settings.update(current => {
+            const volumeOverrides = { ...current.volumeOverrides };
+            
+            if (volumeOverrides[userId]) {
+                delete volumeOverrides[userId][context];
+                if (Object.keys(volumeOverrides[userId]).length === 0) {
+                    delete volumeOverrides[userId];
+                }
             }
+            
             return { volumeOverrides };
         });
     }
+    
     return isNew;
 };
 
 const tryResetVolumeOverride = (userId, context) => {
     if (hasOverride(userId, context)) {
-        Settings.update(({ volumeOverrides }) => {
-            delete volumeOverrides[userId][context];
-            if (Object.keys(volumeOverrides[userId]).length === 0) {
-                delete volumeOverrides[userId];
+        Settings.update(current => {
+            const volumeOverrides = { ...current.volumeOverrides };
+            
+            if (volumeOverrides[userId]) {
+                delete volumeOverrides[userId][context];
+                if (Object.keys(volumeOverrides[userId]).length === 0) {
+                    delete volumeOverrides[userId];
+                }
             }
+            
             return { volumeOverrides };
         });
+        
         return true;
     }
+    
     return false;
 };
 
@@ -548,503 +779,1124 @@ const tryResetVolumeOverride = (userId, context) => {
 
 const css = `
 .container-BetterVolume {
-  margin: 0 8px;
-  padding: 3px 6px;
-  background: var(--background-primary);
-  border-radius: 3px;
-  display: flex;
-  flex-direction: column;
+    margin: 4px 8px;
+    padding: 8px 12px;
+    background: linear-gradient(135deg, var(--background-secondary) 0%, var(--background-tertiary) 100%);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-accent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    min-height: auto;
 }
 
-.slider-BetterVolume {
-  width: 100%;
-  margin-bottom: 5px;
+.container-BetterVolume::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
+    opacity: 0.6;
 }
 
-.input-BetterVolume {
-  width: 50px;
-  margin-right: 2px;
-  background: transparent;
-  border: none;
-  color: var(--interactive-normal);
-  font-weight: 500;
-}
-
-.input-BetterVolume::-webkit-inner-spin-button {
-  opacity: 1;
+.container-BetterVolume:hover {
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+    border-color: var(--brand-experiment-360);
 }
 
 .label-BetterVolume {
-  font-size: 12px;
-  margin-bottom: 5px;
-  color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--header-primary);
+    margin: 0 0 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    letter-spacing: 0.02em;
 }
+
+.label-BetterVolume::before {
+    content: '';
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--brand-experiment);
+    box-shadow: 0 0 4px var(--brand-experiment);
+}
+
+.slider-BetterVolume {
+    width: 100%;
+    height: 4px;
+    margin: 0 0 6px 0;
+    background: var(--background-modifier-accent);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.slider-BetterVolume::-webkit-slider-track {
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--background-modifier-accent) 0%, var(--background-modifier-selected) 100%);
+    border-radius: 2px;
+    border: none;
+}
+
+.slider-BetterVolume::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
+    border: 2px solid var(--background-primary);
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(88, 101, 242, 0.3);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+}
+
+.slider-BetterVolume::-webkit-slider-thumb:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 6px rgba(88, 101, 242, 0.4), 0 0 0 3px rgba(88, 101, 242, 0.15);
+}
+
+.slider-BetterVolume::-webkit-slider-thumb:active {
+    transform: scale(1.0);
+    box-shadow: 0 1px 3px rgba(88, 101, 242, 0.5), 0 0 0 4px rgba(88, 101, 242, 0.2);
+}
+
+.slider-BetterVolume::-moz-range-track {
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--background-modifier-accent) 0%, var(--background-modifier-selected) 100%);
+    border-radius: 2px;
+    border: none;
+}
+
+.slider-BetterVolume::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
+    border: 2px solid var(--background-primary);
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(88, 101, 242, 0.3);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slider-BetterVolume:hover {
+    background: var(--background-modifier-selected);
+}
+
+.volume-input-container {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--background-primary);
+    border-radius: 4px;
+    padding: 4px 8px;
+    border: 1px solid var(--background-modifier-accent);
+    transition: all 0.2s ease;
+}
+
+.volume-input-container:hover {
+    border-color: var(--brand-experiment-360);
+    background: var(--background-secondary);
+}
+
+.volume-input-container:focus-within {
+    border-color: var(--brand-experiment);
+    box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.2);
+}
+
+.input-BetterVolume {
+    width: 45px;
+    background: transparent;
+    border: none;
+    color: var(--text-normal);
+    font-weight: 500;
+    font-size: 12px;
+    text-align: center;
+    outline: none;
+    font-family: var(--font-mono);
+    letter-spacing: 0.3px;
+}
+
+.input-BetterVolume::-webkit-inner-spin-button,
+.input-BetterVolume::-webkit-outer-spin-button {
+    opacity: 0.6;
+    height: 16px;
+    cursor: pointer;
+    filter: brightness(1.1);
+}
+
+.volume-percentage {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 500;
+    min-width: 12px;
+}
+
+.volume-icon {
+    width: 14px;
+    height: 14px;
+    opacity: 0.8;
+    filter: brightness(1.1);
+}
+
+/* Volume level indicators */
+.container-BetterVolume[data-volume-level="low"] .label-BetterVolume::before {
+    background: var(--status-warning);
+    box-shadow: 0 0 6px var(--status-warning);
+}
+
+.container-BetterVolume[data-volume-level="medium"] .label-BetterVolume::before {
+    background: var(--brand-experiment);
+    box-shadow: 0 0 6px var(--brand-experiment);
+}
+
+.container-BetterVolume[data-volume-level="high"] .label-BetterVolume::before {
+    background: var(--status-positive);
+    box-shadow: 0 0 6px var(--status-positive);
+}
+
+.container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before {
+    background: var(--status-danger);
+    box-shadow: 0 0 6px var(--status-danger);
+    animation: pulse-danger 2s infinite;
+}
+
+@keyframes pulse-danger {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Responsive design for smaller context menus */
+@media (max-width: 300px) {
+    .container-BetterVolume {
+        margin: 3px 6px;
+        padding: 6px 8px;
+    }
+    
+    .input-BetterVolume {
+        width: 40px;
+        font-size: 11px;
+    }
+    
+    .volume-input-container {
+        padding: 3px 6px;
+    }
+}
+
+/* Enhanced focus states for accessibility */
+.slider-BetterVolume:focus {
+    outline: 2px solid var(--brand-experiment);
+    outline-offset: 2px;
+}
+
+.input-BetterVolume:focus {
+    color: var(--text-normal);
+}
+
+/* Dark theme compatibility */
+@media (prefers-color-scheme: dark) {
+    .container-BetterVolume {
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
+    
+    .container-BetterVolume:hover {
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), 0 3px 8px rgba(0, 0, 0, 0.2);
+    }
+}
+
+/* High contrast support */
+@media (prefers-contrast: high) {
+    .container-BetterVolume {
+        border: 2px solid var(--brand-experiment);
+    }
+    
+    .slider-BetterVolume::-webkit-slider-thumb {
+        border: 3px solid var(--background-primary);
+    }
+    
+    .volume-input-container {
+        border: 2px solid var(--background-modifier-accent);
+    }
+}
+
+/* Smooth animations preference */
+@media (prefers-reduced-motion: reduce) {
+    .container-BetterVolume,
+    .slider-BetterVolume::-webkit-slider-thumb,
+    .volume-input-container {
+        transition: none;
+    }
+    
+    .container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before {
+        animation: none;
+    }
+}
+.soundbooster-settings{padding:24px;background:var(--background-secondary-alt);border-radius:12px;color:#ffffff;font-family:var(--font-primary);max-width:900px;margin:0 auto;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.soundbooster-settings *{color:#ffffff!important}
+.soundbooster-settings-header{margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid var(--background-modifier-accent);background:linear-gradient(135deg,var(--brand-experiment),var(--brand-experiment-560));padding:20px;border-radius:8px;margin:-24px -24px 28px -24px}
+.soundbooster-settings-title{font-size:24px;font-weight:700;color:#ffffff!important;margin:0;text-shadow:0 2px 4px rgba(0,0,0,.3)}
+.soundbooster-settings-description{font-size:15px;color:rgba(255,255,255,.9)!important;margin:12px 0 0 0;opacity:.95}
+.soundbooster-setting-group{background:var(--background-tertiary);border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid var(--background-modifier-accent);transition:all .2s ease}
+.soundbooster-setting-group:hover{border-color:var(--brand-experiment);transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+.soundbooster-setting-item{margin-bottom:18px}
+.soundbooster-setting-item:last-child{margin-bottom:0}
+.soundbooster-setting-label{display:flex;align-items:center;margin-bottom:10px;font-weight:600;color:#ffffff!important;font-size:15px}
+.soundbooster-setting-description{font-size:13px;color:rgba(255,255,255,.8)!important;margin:0 0 12px 0;opacity:.9}
+.soundbooster-setting-input{width:100%;max-width:280px;padding:12px 16px;border-radius:6px;border:2px solid var(--input-background);background:var(--background-primary);color:#ffffff!important;font-size:14px;font-weight:500;transition:all .2s ease}
+.soundbooster-setting-input:focus{outline:none;border-color:var(--brand-experiment);box-shadow:0 0 0 3px rgba(88,101,242,.2);background:var(--background-secondary)}
+.soundbooster-setting-input::-webkit-inner-spin-button,.soundbooster-setting-input::-webkit-outer-spin-button{opacity:1;filter:brightness(2)}
+.soundbooster-checkbox-container{display:flex;align-items:flex-start;gap:12px;padding:16px;background:var(--background-primary);border-radius:8px;border:2px solid var(--background-modifier-accent);transition:all .2s ease}
+.soundbooster-checkbox-container:hover{border-color:var(--brand-experiment);background:var(--background-secondary)}
+.soundbooster-checkbox{width:20px;height:20px;accent-color:var(--brand-experiment);margin-top:2px;cursor:pointer}
+.soundbooster-checkbox-content{flex:1}
+.soundbooster-checkbox-label{color:#ffffff!important;font-size:15px;font-weight:500;cursor:pointer;user-select:none;display:block;margin-bottom:4px}
+.soundbooster-checkbox-desc{font-size:13px;color:rgba(255,255,255,.7)!important;line-height:1.4}
+.soundbooster-button-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+.soundbooster-button{padding:12px 20px;border-radius:6px;border:none;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s ease;min-width:140px;position:relative;overflow:hidden}
+.soundbooster-button:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.3)}
+.soundbooster-button:active{transform:translateY(0)}
+.soundbooster-button-primary{background:linear-gradient(135deg,var(--brand-experiment),var(--brand-experiment-560));color:#ffffff!important;box-shadow:0 4px 12px rgba(88,101,242,.3)}
+.soundbooster-button-secondary{background:linear-gradient(135deg,var(--button-secondary-background),var(--background-primary));color:#ffffff!important;border:1px solid var(--background-modifier-accent)}
+.soundbooster-button-danger{background:linear-gradient(135deg,#ed4245,#c03537);color:#ffffff!important;box-shadow:0 4px 12px rgba(237,66,69,.3)}
+.soundbooster-backup-section{margin-top:32px;padding:24px;background:linear-gradient(135deg,var(--background-tertiary),var(--background-primary));border-radius:10px;border-left:4px solid var(--brand-experiment);position:relative;overflow:hidden}
+.soundbooster-backup-section::before{content:'';position:absolute;top:0;right:0;width:100px;height:100px;background:radial-gradient(circle,rgba(88,101,242,.1) 0%,transparent 70%);pointer-events:none}
+.soundbooster-backup-title{font-size:18px;font-weight:700;color:#ffffff!important;margin:0 0 8px 0;display:flex;align-items:center;gap:8px}
+.soundbooster-backup-title::before{content:'💾';font-size:20px}
+.soundbooster-backup-desc{font-size:14px;color:rgba(255,255,255,.8)!important;margin-bottom:20px;line-height:1.5}
+.soundbooster-file-input{display:none}
+.soundbooster-file-label{display:inline-flex;align-items:center;gap:8px;padding:12px 18px;background:linear-gradient(135deg,var(--button-secondary-background),var(--background-primary));color:#ffffff!important;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all .2s ease;border:1px solid var(--background-modifier-accent)}
+.soundbooster-file-label:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.2);border-color:var(--brand-experiment)}
+.soundbooster-file-label::before{content:'📁';font-size:16px}
+.soundbooster-volume-stats{margin-top:20px;padding:16px;background:var(--background-primary);border-radius:8px;border:1px solid var(--background-modifier-accent)}
+.soundbooster-stats-title{font-size:14px;font-weight:600;color:#ffffff!important;margin-bottom:8px}
+.soundbooster-stats-text{font-size:13px;color:rgba(255,255,255,.8)!important}
 `;
 
 const styles = {
     container: "container-BetterVolume",
     slider: "slider-BetterVolume",
-    input: "input-BetterVolume",
+    input: "input-BetterVolume",  
     label: "label-BetterVolume"
 };
 
-const VolumeControl = ({ value, context, min, max, onChange }) => {
-    const [localValue, setLocalValue] = React.useState(value);
-    const { volumeStep, mouseWheelStep } = Settings.current;
-
-    // We'll attach wheel event to the container <div>
-    const containerRef = React.useRef(null);
-
-    React.useEffect(() => {
-        setLocalValue(value);
-    }, [value]);
-
-    // Passive: false wheel logic
-    React.useEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
-
-        const handleWheel = (e) => {
-            e.preventDefault();
-            const delta = e.deltaY < 0 ? mouseWheelStep : -mouseWheelStep;
-            handleChange(localValue + delta);
+const createVolumeControl = ({ React }) => {
+    // Create throttle function outside of hooks
+    const createThrottle = (func, limit) => {
+        let inThrottle;
+        return function(...args) {
+            if (!inThrottle) {
+                func.apply(this, args);
+                inThrottle = true;
+                setTimeout(() => inThrottle = false, limit);
+            }
         };
-
-        container.addEventListener("wheel", handleWheel, { passive: false });
-        return () => {
-            container.removeEventListener("wheel", handleWheel, { passive: false });
-        };
-    }, [localValue, mouseWheelStep]);
-
-    const handleChange = (newVal) => {
-        newVal = Math.round(newVal / volumeStep) * volumeStep;
-        newVal = Math.max(min, Math.min(max, newVal));
-        setLocalValue(newVal);
-        onChange(newVal, context);
     };
-
-    return React.createElement(
-        "div",
-        {
-            className: styles.container,
-            ref: containerRef
-        },
-        React.createElement(
+    
+    return React.memo(({ value, context, min, max, onChange }) => {
+        const [localValue, setLocalValue] = React.useState(value);
+        
+        // Use useMemo to prevent recalculation on every render
+        const settings = React.useMemo(() => Settings.current, [Settings.current.volumeStep, Settings.current.mouseWheelStep]);
+        const { volumeStep, mouseWheelStep } = settings;
+        
+        const containerRef = React.useRef(null);
+        const onChangeRef = React.useRef(onChange);
+        
+        React.useEffect(() => {
+            onChangeRef.current = onChange;
+        }, [onChange]);
+        
+        React.useEffect(() => {
+            setLocalValue(value);
+        }, [value]);
+        
+        const handleChange = React.useCallback((newVal) => {
+            const clampedVal = Math.max(min, Math.min(max, Math.round(newVal / volumeStep) * volumeStep));
+            if (clampedVal !== localValue) { // Only update if value actually changed
+                setLocalValue(clampedVal);
+                onChangeRef.current(clampedVal, context);
+            }
+        }, [context, min, max, volumeStep, localValue]);
+        
+        // Optimize wheel event handling
+        const throttledHandleWheel = React.useMemo(() => 
+            createThrottle((delta) => {
+                handleChange(localValue + delta);
+            }, 50), // Reduced throttle for better responsiveness
+        [handleChange, localValue]);
+        
+        React.useEffect(() => {
+            const container = containerRef.current;
+            if (!container) return;
+            
+            const handleWheel = (e) => {
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? mouseWheelStep : -mouseWheelStep;
+                throttledHandleWheel(delta);
+            };
+            
+            container.addEventListener("wheel", handleWheel, { passive: false });
+            return () => {
+                container.removeEventListener("wheel", handleWheel);
+            };
+        }, [throttledHandleWheel, mouseWheelStep]);
+        
+        const handleSliderChange = React.useCallback((e) => {
+            handleChange(parseFloat(e.target.value));
+        }, [handleChange]);
+        
+        const handleInputChange = React.useCallback((e) => {
+            handleChange(parseFloat(e.target.value));
+        }, [handleChange]);
+        
+        // Determine volume level for styling
+        const getVolumeLevel = (volume) => {
+            if (volume <= 100) return "low";
+            if (volume <= 300) return "medium";
+            if (volume <= 600) return "high";
+            return "extreme";
+        };
+        
+        const volumeLevel = getVolumeLevel(localValue);
+        const isVoice = context === "default";
+        const labelText = isVoice ? "🎤 Voice Volume" : "📺 Stream Volume";
+        
+        return React.createElement(
             "div",
-            { className: styles.label },
-            context === "default" ? "Voice Volume" : "Stream Volume"
-        ),
-        React.createElement("input", {
-            type: "range",
-            className: styles.slider,
-            min,
-            max,
-            step: volumeStep,
-            value: localValue,
-            onChange: (e) => handleChange(parseFloat(e.target.value))
-        }),
-        React.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "center" } },
+            {
+                className: styles.container,
+                ref: containerRef,
+                "data-volume-level": volumeLevel
+            },
+            React.createElement(
+                "div",
+                { className: styles.label },
+                labelText
+            ),
             React.createElement("input", {
-                type: "number",
-                className: styles.input,
+                type: "range",
+                className: styles.slider,
                 min,
                 max,
                 step: volumeStep,
-                value: Math.round(localValue),
-                onChange: (e) => handleChange(parseFloat(e.target.value))
+                value: localValue,
+                onChange: handleSliderChange,
+                title: `${labelText}: ${Math.round(localValue)}%`
             }),
-            React.createElement("span", null, "%")
-        )
-    );
-};
-
-const MAX_VOLUME_PERC = 200;
-const MAX_VOLUME_AMP = AudioConvert.perceptualToAmplitude(MAX_VOLUME_PERC);
-
-const dispatchVolumeOverrides = () => {
-    log("Dispatching volume overrides");
-    for (const [userId, contexts] of Object.entries(Settings.current.volumeOverrides)) {
-        for (const [ctx, volume] of Object.entries(contexts)) {
-            Dispatcher.dispatch({
-                type: "AUDIO_SET_LOCAL_VOLUME",
-                userId,
-                context: ctx,
-                volume: AudioConvert.perceptualToAmplitude(volume)
-            });
-        }
-    }
-};
-
-const settingsUpdateHandler = (_action) => dispatchVolumeOverrides();
-
-let originalHandler = null;
-
-const wrappedSettingsManagerHandler = (action) => {
-    const { userId, volume, context } = action;
-    const perceptualVolume = AudioConvert.amplitudeToPerceptual(volume);
-    const isOverCap = volume > MAX_VOLUME_AMP;
-    if (isOverCap) {
-        const isNew = updateVolumeOverride(userId, perceptualVolume, context);
-        if (isNew) {
-            log(`New volume override ${perceptualVolume} for user ${userId} context ${context}`);
-            originalHandler({ ...action, volume: MAX_VOLUME_AMP });
-        }
-    } else {
-        const wasRemoved = tryResetVolumeOverride(userId, context);
-        if (wasRemoved) {
-            log(`Removed volume override for user ${userId} context ${context}`);
-        }
-        originalHandler(action);
-    }
-};
-
-const trySwapHandler = (action, prev, next) => {
-    const sub = Dispatcher._subscriptions[action];
-    if (!sub) return false;
-    const isPresent = sub.has(prev);
-    if (isPresent) {
-        Dispatcher.unsubscribe(action, prev);
-        Dispatcher.subscribe(action, next);
-    }
-    return isPresent;
-};
-
-const hasSetVolume = byKeys("AUDIO_SET_LOCAL_VOLUME");
-
-const handleVolumeSync = () => {
-    Dispatcher.subscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
-    log(`Subscribed to USER_SETTINGS_PROTO_UPDATE events`);
-    dispatchVolumeOverrides();
-
-    waitFor((exported) => exported.actions && hasSetVolume(exported.actions)).then(
-        (AudioSettingsManager) => {
-            originalHandler = AudioSettingsManager.actions["AUDIO_SET_LOCAL_VOLUME"];
-            const swapped = trySwapHandler(
-                "AUDIO_SET_LOCAL_VOLUME",
-                originalHandler,
-                wrappedSettingsManagerHandler
-            );
-            if (swapped) {
-                log(`Replaced AUDIO_SET_LOCAL_VOLUME handler`);
-            } else {
-                warn(`AUDIO_SET_LOCAL_VOLUME handler not present`);
-            }
-        }
-    );
-
-    Dispatcher.subscribe("VOICE_CHANNEL_SELECT", ({ channelId, guildId }) => {
-        if (channelId) {
-            const members = MediaEngineStore.getChannelMembers(channelId, guildId);
-            members.forEach((userId) => {
-                if (!hasOverride(userId, "default")) {
-                    MediaEngineActions.setLocalVolume(
-                        userId,
-                        AudioConvert.perceptualToAmplitude(Settings.current.defaultUserVolume),
-                        "default"
-                    );
-                }
-            });
-        }
+            React.createElement(
+                "div",
+                { className: "volume-input-container" },
+                React.createElement("input", {
+                    type: "number",
+                    className: styles.input,
+                    min,
+                    max,
+                    step: volumeStep,
+                    value: Math.round(localValue),
+                    onChange: handleInputChange,
+                    title: "Enter exact volume percentage"
+                }),
+                React.createElement("span", { className: "volume-percentage" }, "%")
+            )
+        );
     });
 };
 
-const resetVolumeSync = () => {
-    Dispatcher.unsubscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
-    log(`Unsubscribed from USER_SETTINGS_PROTO_UPDATE events`);
-    const swapped = trySwapHandler(
-        "AUDIO_SET_LOCAL_VOLUME",
-        wrappedSettingsManagerHandler,
-        originalHandler
-    );
-    if (swapped) {
-        log(`Reset AUDIO_SET_LOCAL_VOLUME handler`);
+const MAX_VOLUME_PERC = 200;
+
+const applyDefaultVolumeToMembers = (channelId, guildId, MediaEngineStore, MediaEngineActions, AudioConvert) => {
+    if (!channelId) return;
+    
+    try {
+        const members = MediaEngineStore.getChannelMembers(channelId, guildId);
+        if (!members || members.length === 0) return;
+        
+        const { defaultUserVolume } = Settings.current;
+        const cachedAmplitude = AudioConvert.perceptualToAmplitude(defaultUserVolume);
+        
+        // Process in smaller batches to avoid blocking
+        const processBatch = (userBatch) => {
+            userBatch.forEach((userId) => {
+                if (!hasOverride(userId, "default")) {
+                    MediaEngineActions.setLocalVolume(userId, cachedAmplitude, "default");
+                }
+            });
+        };
+        
+        // Split into batches of 10 users
+        const batchSize = 10;
+        for (let i = 0; i < members.length; i += batchSize) {
+            const batch = members.slice(i, i + batchSize);
+            setTimeout(() => processBatch(batch), i / batchSize); // Stagger processing
+        }
+    } catch (error) {
+        logger.warn("Failed to apply default volume:", error);
     }
 };
 
-// used to filter userVolume context menu item
-const useUserVolumeItemFilter = bySource("user-volume");
+const createVolumeDispatcher = (Dispatcher, AudioConvert) => {
+    let isDispatching = false; // Prevent concurrent dispatching
+    
+    return () => {
+        if (isDispatching) return; // Skip if already dispatching
+        isDispatching = true;
+        
+        const { volumeOverrides } = Settings.current;
+        const users = Object.keys(volumeOverrides);
+        
+        if (users.length === 0) {
+            isDispatching = false;
+            return;
+        }
+        
+        logger.log(`Dispatching ${users.length} volume overrides`);
+        
+        // Batch process in microtasks for better performance
+        Promise.resolve().then(() => {
+            try {
+                for (const userId of users) {
+                    const contexts = volumeOverrides[userId];
+                    
+                    for (const ctx in contexts) {
+                        const volume = contexts[ctx];
+                        const amplitudeVolume = AudioConvert.perceptualToAmplitude(volume);
+                        
+                        Dispatcher.dispatch({
+                            type: "AUDIO_SET_LOCAL_VOLUME",
+                            userId,
+                            context: ctx,
+                            volume: amplitudeVolume
+                        });
+                    }
+                }
+            } finally {
+                isDispatching = false;
+            }
+        });
+    };
+};
 
 /* -------------------------------------------------------------------------- */
 /*                            Settings Panel UI                               */
 /* -------------------------------------------------------------------------- */
 
-const InfoIcon = () =>
-    React.createElement(
-        "svg",
-        {
-            width: "16",
-            height: "16",
-            viewBox: "0 0 24 24",
-            style: { marginLeft: "5px", cursor: "help" }
-        },
-        React.createElement("path", {
-            fill: "currentColor",
-            d: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"
-        })
-    );
-
-const Tooltip = ({ content, children }) => {
-    const [show, setShow] = React.useState(false);
-    return React.createElement(
-        "span",
-        {
-            style: { position: "relative" },
-            onMouseEnter: () => setShow(true),
-            onMouseLeave: () => setShow(false)
-        },
-        children,
-        show &&
-            React.createElement(
-                "span",
-                {
-                    style: {
-                        position: "absolute",
-                        bottom: "100%",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        backgroundColor: "black",
-                        color: "white",
-                        padding: "5px",
-                        borderRadius: "3px",
-                        whiteSpace: "nowrap",
-                        zIndex: 99999
-                    }
-                },
-                content
-            )
-    );
-};
-
-const settingsStyles = {
-    container: {
-        padding: "10px",
-        backgroundColor: "var(--background-secondary)",
-        borderRadius: "5px",
-        color: "var(--text-normal)"
-    },
-    item: {
-        marginBottom: "15px"
-    },
-    label: {
-        display: "flex",
-        alignItems: "center",
-        marginBottom: "5px",
-        fontWeight: "bold"
-    },
-    input: {
-        width: "50%",
-        padding: "8px",
-        borderRadius: "3px",
-        border: "1px solid var(--interactive-normal)",
-        backgroundColor: "var(--background-tertiary)",
-        color: "var(--text-normal)"
-    },
-    checkboxRow: {
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        marginTop: "10px"
-    }
-};
-
-const SettingsPanel = () => {
-    const [settings, setSettings] = React.useState(Settings.current);
-
-    const updateSetting = (key, value) => {
-        const typedValue =
-            typeof value === "boolean" ? value : Number(value);
-        if (
-            typeof typedValue === "number" &&
-            (isNaN(typedValue) || typedValue < 0 || typedValue > 10000)
-        ) {
-            return;
+const main = () => {
+    const {
+        Dispatcher,
+        LegacyModules,
+        MediaEngineStore,
+        MediaEngineActions,
+        React,
+        TextInput,
+        AudioConvert,
+        Button,
+        Flex,
+        FormComponents,
+        margins,
+        ContextMenu
+    } = fetchDiscordModules();
+    
+    Settings.setDependencies(LegacyModules);
+    
+    const SettingsContainer = createSettingsContainer({
+        React,
+        FormSection: FormComponents.FormSection,
+        FormDivider: FormComponents.FormDivider,
+        Flex,
+        Button,
+        margins
+    });
+    
+    const VolumeControl = createVolumeControl({ React });
+    
+    const MAX_VOLUME_AMP = AudioConvert.perceptualToAmplitude(MAX_VOLUME_PERC);
+    
+    const dispatchVolumeOverrides = createVolumeDispatcher(Dispatcher, AudioConvert);
+    
+    const settingsUpdateHandler = () => dispatchVolumeOverrides();
+    
+    let originalHandler = null;
+    
+    const wrappedSettingsManagerHandler = (action) => {
+        const { userId, volume, context } = action;
+        const perceptualVolume = AudioConvert.amplitudeToPerceptual(volume);
+        const isOverCap = volume > MAX_VOLUME_AMP;
+        
+        if (isOverCap) {
+            const isNew = updateVolumeOverride(userId, perceptualVolume, context);
+            if (isNew) {
+                logger.log(`New volume override ${perceptualVolume} for user ${userId} context ${context}`);
+                originalHandler({ ...action, volume: MAX_VOLUME_AMP });
+            }
+        } else {
+            const wasRemoved = tryResetVolumeOverride(userId, context);
+            if (wasRemoved) {
+                logger.log(`Removed volume override for user ${userId} context ${context}`);
+            }
+            originalHandler(action);
         }
-        const newSettings = { ...settings, [key]: typedValue };
-        setSettings(newSettings);
-        Settings.update(newSettings);
     };
-
-    const handleWheel = (e, key) => {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -settings.volumeStep : settings.volumeStep;
-        updateSetting(key, settings[key] + delta);
-    };
-
-    const settingsConfig = [
-        {
-            key: "defaultUserVolume",
-            label: "Default User Volume",
-            info: "Initial volume for users not in the config"
-        },
-        {
-            key: "maxUserVolume",
-            label: "Max User Volume",
-            info: "Maximum allowed volume for users"
-        },
-        {
-            key: "maxStreamVolume",
-            label: "Max Stream Volume",
-            info: "Maximum allowed volume for streams"
-        },
-        {
-            key: "volumeStep",
-            label: "Volume Step",
-            info: "Step size for volume changes"
+    
+    const trySwapHandler = (action, prev, next) => {
+        const sub = Dispatcher._subscriptions[action];
+        if (!sub) return false;
+        const isPresent = sub.has(prev);
+        if (isPresent) {
+            Dispatcher.unsubscribe(action, prev);
+            Dispatcher.subscribe(action, next);
         }
-    ];
+        return isPresent;
+    };
+    
+    const hasSetVolume = byKeys("AUDIO_SET_LOCAL_VOLUME");
+    
+    const handleVolumeSync = () => {
+        // Lazy initialization to improve startup performance
+        const initializeHandlers = () => {
+            Dispatcher.subscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
+            logger.log(`Subscribed to USER_SETTINGS_PROTO_UPDATE events`);
+            
+            const voiceChannelHandler = ({ channelId, guildId }) => {
+                // Debounce voice channel changes to reduce overhead
+                clearTimeout(voiceChannelHandler.timeout);
+                voiceChannelHandler.timeout = setTimeout(() => {
+                    applyDefaultVolumeToMembers(channelId, guildId, MediaEngineStore, MediaEngineActions, AudioConvert);
+                }, 100);
+            };
+            
+            Dispatcher.subscribe("VOICE_CHANNEL_SELECT", voiceChannelHandler);
+        };
+        
+        // Initialize handlers after a short delay to prevent blocking startup
+        setTimeout(initializeHandlers, 50);
+        
+        // Dispatch overrides after initialization
+        setTimeout(dispatchVolumeOverrides, 100);
 
-    return React.createElement(
-        "div",
-        { style: settingsStyles.container },
-        settingsConfig.map(({ key, label, info }) =>
-            React.createElement(
-                "div",
-                { key, style: settingsStyles.item },
-                React.createElement(
-                    "label",
-                    { style: settingsStyles.label },
-                    label,
-                    React.createElement(
-                        Tooltip,
-                        { content: info },
-                        React.createElement(InfoIcon)
-                    )
-                ),
-                React.createElement("input", {
-                    type: "number",
-                    value: settings[key],
-                    onChange: (e) => updateSetting(key, e.target.value),
-                    onWheel: (e) => handleWheel(e, key),
-                    style: settingsStyles.input,
-                    min: 0,
-                    max: 10000
-                })
-            )
-        ),
-
-        // NEW: "Hide Original Volume" setting
-        React.createElement(
-            "div",
-            { style: settingsStyles.checkboxRow },
-            React.createElement("input", {
-                type: "checkbox",
-                checked: !!settings.hideOriginalVolume,
-                onChange: (e) => updateSetting("hideOriginalVolume", e.target.checked)
-            }),
-            React.createElement(
-                "label",
-                null,
-                "Hide Original Volume (Discord's built-in slider)"
-            )
-        )
-    );
-};
-
-/* -------------------------------------------------------------------------- */
-/*                     Main Plugin with Context Patch                         */
-/* -------------------------------------------------------------------------- */
-
-const index = createPlugin({
-    start() {
-        handleVolumeSync();
-
-        // Patch the user-volume item in the context menu
-        waitFor(useUserVolumeItemFilter, { resolve: false }).then((result) => {
-            const useUserVolumeItem = resolveKey(result, useUserVolumeItemFilter);
-            after(
-                ...useUserVolumeItem,
-                ({ args: [userId], result: menuResult }) => {
-                    if (!menuResult) return;
-
-                    const {
-                        maxUserVolume,
-                        maxStreamVolume,
-                        defaultUserVolume,
-                        hideOriginalVolume
-                    } = Settings.current;
-
-                    // Grab voice/stream amplitude
-                    const voiceVolumeAmp = MediaEngineStore.getLocalVolume(userId, "default");
-                    const streamVolumeAmp = MediaEngineStore.getLocalVolume(userId, "stream");
-
-                    // Convert to perceptual
-                    const voiceVolume =
-                        AudioConvert.amplitudeToPerceptual(voiceVolumeAmp) || defaultUserVolume;
-                    const streamVolume =
-                        AudioConvert.amplitudeToPerceptual(streamVolumeAmp) || defaultUserVolume;
-
-                    // If hideOriginalVolume is true, skip rendering menuResult
-                    return React.createElement(
-                        React.Fragment,
-                        null,
-                        hideOriginalVolume ? null : menuResult,
-                        React.createElement(MenuItem, {
-                            id: "user-volume-controls",
-                            render: () =>
-                                React.createElement(
-                                    React.Fragment,
-                                    null,
-                                    React.createElement(VolumeControl, {
-                                        value: voiceVolume,
-                                        context: "default",
-                                        min: 0,
-                                        max: maxUserVolume,
-                                        onChange: (val, ctx) => {
-                                            MediaEngineActions.setLocalVolume(
-                                                userId,
-                                                AudioConvert.perceptualToAmplitude(val),
-                                                ctx
-                                            );
-                                            updateVolumeOverride(userId, val, ctx);
-                                        }
-                                    }),
-                                    React.createElement(VolumeControl, {
-                                        value: streamVolume,
-                                        context: "stream",
-                                        min: 0,
-                                        max: maxStreamVolume,
-                                        onChange: (val, ctx) => {
-                                            MediaEngineActions.setLocalVolume(
-                                                userId,
-                                                AudioConvert.perceptualToAmplitude(val),
-                                                ctx
-                                            );
-                                            updateVolumeOverride(userId, val, ctx);
-                                        }
-                                    })
-                                )
-                        })
-                    );
-                },
-                { name: "useUserVolumeItem" }
-            );
-        });
-
-        // Default volume for new VC members
-        Dispatcher.subscribe("VOICE_CHANNEL_SELECT", ({ channelId, guildId }) => {
-            if (channelId) {
-                const members = MediaEngineStore.getChannelMembers(channelId, guildId);
-                members.forEach((userId) => {
-                    if (!hasOverride(userId, "default")) {
+        waitFor((exported) => exported.actions && hasSetVolume(exported.actions), { cacheKey: "AudioSettingsManager" }).then(
+            (AudioSettingsManager) => {
+                originalHandler = AudioSettingsManager.actions["AUDIO_SET_LOCAL_VOLUME"];
+                const swapped = trySwapHandler(
+                    "AUDIO_SET_LOCAL_VOLUME",
+                    originalHandler,
+                    wrappedSettingsManagerHandler
+                );
+                if (swapped) {
+                    logger.log(`Replaced AUDIO_SET_LOCAL_VOLUME handler`);
+                } else {
+                    logger.warn(`AUDIO_SET_LOCAL_VOLUME handler not present`);
+                }
+            }
+        );
+    };
+    
+    const resetVolumeSync = () => {
+        Dispatcher.unsubscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
+        logger.log(`Unsubscribed from USER_SETTINGS_PROTO_UPDATE events`);
+        const swapped = trySwapHandler(
+            "AUDIO_SET_LOCAL_VOLUME",
+            wrappedSettingsManagerHandler,
+            originalHandler
+        );
+        if (swapped) {
+            logger.log(`Reset AUDIO_SET_LOCAL_VOLUME handler`);
+        }
+    };
+    
+    const useUserVolumeItemFilter = bySource("user-volume");
+    
+    const ReactRef = BdApi.React;
+    
+    const VolumeControlComponent = createVolumeControl({ React: ReactRef });
+    
+    return {
+        start() {
+            handleVolumeSync();
+    
+            waitFor(useUserVolumeItemFilter, { resolve: false, cacheKey: "useUserVolumeItemFilter" }).then((result) => {
+                const useUserVolumeItem = resolveKey(result, useUserVolumeItemFilter);
+                
+                const createVolumeControls = ReactRef.memo(({ userId, voiceVolume, streamVolume }) => {
+                    // Memoize settings to prevent recalculations
+                    const settings = ReactRef.useMemo(() => ({
+                        maxUserVolume: Settings.current.maxUserVolume,
+                        maxStreamVolume: Settings.current.maxStreamVolume,
+                    }), [Settings.current.maxUserVolume, Settings.current.maxStreamVolume]);
+                    
+                    const { maxUserVolume, maxStreamVolume } = settings;
+                    
+                    const handleVoiceChange = ReactRef.useCallback((val, ctx) => {
                         MediaEngineActions.setLocalVolume(
                             userId,
-                            AudioConvert.perceptualToAmplitude(Settings.current.defaultUserVolume),
-                            "default"
+                            AudioConvert.perceptualToAmplitude(val),
+                            ctx
                         );
-                    }
+                        updateVolumeOverride(userId, val, ctx);
+                    }, [userId]);
+                    
+                    const handleStreamChange = ReactRef.useCallback((val, ctx) => {
+                        MediaEngineActions.setLocalVolume(
+                            userId,
+                            AudioConvert.perceptualToAmplitude(val),
+                            ctx
+                        );
+                        updateVolumeOverride(userId, val, ctx);
+                    }, [userId]);
+                    
+                    return ReactRef.createElement(
+                        ReactRef.Fragment,
+                        null,
+                        ReactRef.createElement(VolumeControlComponent, {
+                            value: voiceVolume,
+                            context: "default",
+                            min: 0,
+                            max: maxUserVolume,
+                            onChange: handleVoiceChange
+                        }),
+                        ReactRef.createElement(VolumeControlComponent, {
+                            value: streamVolume,
+                            context: "stream",
+                            min: 0,
+                            max: maxStreamVolume,
+                            onChange: handleStreamChange
+                        })
+                    );
                 });
+                
+                after(
+                    ...useUserVolumeItem,
+                    ({ args: [userId], result: menuResult }) => {
+                        if (!menuResult) return;
+    
+                        const { defaultUserVolume, defaultStreamVolume, hideOriginalVolume } = Settings.current;
+    
+                        const voiceVolumeAmp = MediaEngineStore.getLocalVolume(userId, "default");
+                        const streamVolumeAmp = MediaEngineStore.getLocalVolume(userId, "stream");
+    
+                        const voiceVolume =
+                            AudioConvert.amplitudeToPerceptual(voiceVolumeAmp) || defaultUserVolume;
+                        const streamVolume =
+                            AudioConvert.amplitudeToPerceptual(streamVolumeAmp) || defaultStreamVolume;
+    
+                        return ReactRef.createElement(
+                            ReactRef.Fragment,
+                            null,
+                            hideOriginalVolume ? null : menuResult,
+                            ReactRef.createElement(ContextMenu.Item, {
+                                id: "user-volume-controls",
+                                render: () => ReactRef.createElement(createVolumeControls, {
+                                    userId,
+                                    voiceVolume,
+                                    streamVolume
+                                })
+                            })
+                        );
+                    },
+                    { name: "useUserVolumeItem" }
+                );
+            });
+        },
+    
+        stop() {
+            resetVolumeSync();
+            
+            // Clear all caches to free memory
+            moduleCache.clear();
+            cachedFilters.clear();
+            promiseCache.clear();
+            
+            // Clear audio conversion cache
+            if (cachedAudioConvert && cachedAudioConvert.clearCache) {
+                cachedAudioConvert.clearCache();
             }
-        });
-    },
-    stop() {
-        resetVolumeSync();
-    },
-    styles: css,
-    Settings,
-    SettingsPanel: () => React.createElement(SettingsPanel)
-});
+            
+            // Clear settings listeners
+            Settings.removeAllListeners();
+            
+            logger.log("Plugin cleanup completed");
+        },
+    
+        styles: css,
+        Settings,
+        SettingsPanel: () => {
+            const React = ReactRef;
+            const [settings, setSettings] = React.useState(() => Settings.current);
+            const [isExporting, setIsExporting] = React.useState(false);
+            const [isImporting, setIsImporting] = React.useState(false);
+            const fileInputRef = React.useRef(null);
+            
+            // Optimize update callback to prevent unnecessary re-renders
+            const updateSetting = React.useCallback((key, value) => {
+                const typedValue = typeof value === "boolean" ? value : Number(value);
+                if (typeof typedValue === "number" && (isNaN(typedValue) || typedValue < 0 || typedValue > 10000)) {
+                    return;
+                }
+                
+                // Only update if value actually changed
+                if (settings[key] !== typedValue) {
+                    const newSettings = { ...settings, [key]: typedValue };
+                    setSettings(newSettings);
+                    Settings.update({ [key]: typedValue });
+                }
+            }, [settings]);
+            
+            const exportSettings = React.useCallback(async () => {
+                if (isExporting) return;
+                setIsExporting(true);
+                
+                try {
+                    const dataStr = Settings.exportSettings();
+                    const blob = new Blob([dataStr], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = `soundbooster-settings-${new Date().toISOString().slice(0, 10)}.json`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                    BdApi.UI.showToast("Settings exported successfully!", { type: "success" });
+                } catch (error) {
+                    BdApi.UI.showToast("Failed to export settings!", { type: "error" });
+                } finally {
+                    setTimeout(() => setIsExporting(false), 1000);
+                }
+            }, [isExporting]);
+            
+            const importSettings = React.useCallback((event) => {
+                const file = event.target.files[0];
+                if (!file || isImporting) return;
+                
+                setIsImporting(true);
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const success = Settings.importSettings(e.target.result);
+                        if (success) {
+                            setSettings({ ...Settings.current });
+                            BdApi.UI.showToast("Settings imported successfully!", { type: "success" });
+                        } else {
+                            BdApi.UI.showToast("Failed to import settings. Invalid file format.", { type: "error" });
+                        }
+                    } catch (error) {
+                        BdApi.UI.showToast("Failed to import settings!", { type: "error" });
+                    } finally {
+                        setTimeout(() => setIsImporting(false), 1000);
+                    }
+                };
+                reader.readAsText(file);
+                event.target.value = "";
+            }, [isImporting]);
+            
+            const resetSettings = React.useCallback(() => {
+                BdApi.UI.showConfirmationModal(
+                    "Reset Settings",
+                    "Are you sure you want to reset all settings to default? This action cannot be undone.",
+                    {
+                        onConfirm: () => {
+                            Settings.reset();
+                            setSettings({ ...Settings.current });
+                            BdApi.UI.showToast("Settings reset successfully!", { type: "success" });
+                        }
+                    }
+                );
+            }, []);
+            
+            const volumeOverrideCount = React.useMemo(() => {
+                return Object.keys(settings.volumeOverrides || {}).length;
+            }, [settings.volumeOverrides]);
+            
+            return React.createElement(
+                "div",
+                { className: "soundbooster-settings" },
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-settings-header" },
+                    React.createElement(
+                        "h1",
+                        { className: "soundbooster-settings-title" },
+                        "🔊 SoundBooster Settings"
+                    ),
+                    React.createElement(
+                        "p",
+                        { className: "soundbooster-settings-description" },
+                        "Configure volume limits, steps, and behavior for enhanced audio control beyond Discord's default limits."
+                    )
+                ),
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-setting-group" },
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "🎤 Default User Volume (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "The initial volume level applied to users who don't have custom volume overrides"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.defaultUserVolume,
+                            onChange: (e) => updateSetting("defaultUserVolume", e.target.value),
+                            min: 0,
+                            max: 1000,
+                            step: 10
+                        })
+                    ),
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "🔊 Max User Volume (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "Maximum volume limit for individual user voices (Discord default is 200%)"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.maxUserVolume,
+                            onChange: (e) => updateSetting("maxUserVolume", e.target.value),
+                            min: 100,
+                            max: 1000,
+                            step: 50
+                        })
+                    )
+                ),
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-setting-group" },
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "📺 Max Stream Volume (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "Maximum volume limit for screen share and camera streams"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.maxStreamVolume,
+                            onChange: (e) => updateSetting("maxStreamVolume", e.target.value),
+                            min: 100,
+                            max: 1000,
+                            step: 50
+                        })
+                    ),
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "📺 Default Stream Volume (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "The initial volume level applied to user streams who don't have custom volume overrides"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.defaultStreamVolume,
+                            onChange: (e) => updateSetting("defaultStreamVolume", e.target.value),
+                            min: 0,
+                            max: 1000,
+                            step: 10
+                        })
+                    ),
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "⚡ Volume Step (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "How much the volume changes with each adjustment step"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.volumeStep,
+                            onChange: (e) => updateSetting("volumeStep", e.target.value),
+                            min: 1,
+                            max: 100,
+                            step: 1
+                        })
+                    )
+                ),
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-setting-group" },
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-setting-item" },
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-setting-label" },
+                            "🖱️ Mouse Wheel Step (%)"
+                        ),
+                        React.createElement(
+                            "p",
+                            { className: "soundbooster-setting-description" },
+                            "Volume change amount when scrolling with mouse wheel over volume controls"
+                        ),
+                        React.createElement("input", {
+                            type: "number",
+                            className: "soundbooster-setting-input",
+                            value: settings.mouseWheelStep,
+                            onChange: (e) => updateSetting("mouseWheelStep", e.target.value),
+                            min: 1,
+                            max: 200,
+                            step: 5
+                        })
+                    ),
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-checkbox-container" },
+                        React.createElement("input", {
+                            type: "checkbox",
+                            className: "soundbooster-checkbox",
+                            id: "hideOriginalVolume",
+                            checked: !!settings.hideOriginalVolume,
+                            onChange: (e) => updateSetting("hideOriginalVolume", e.target.checked)
+                        }),
+                        React.createElement(
+                            "div",
+                            { className: "soundbooster-checkbox-content" },
+                            React.createElement(
+                                "label",
+                                { 
+                                    className: "soundbooster-checkbox-label",
+                                    htmlFor: "hideOriginalVolume"
+                                },
+                                "🙈 Hide Discord's Built-in Volume Slider"
+                            ),
+                            React.createElement(
+                                "p",
+                                { className: "soundbooster-checkbox-desc" },
+                                "Removes Discord's default volume slider from user context menus, showing only SoundBooster controls"
+                            )
+                        )
+                    )
+                ),
+                
+                volumeOverrideCount > 0 && React.createElement(
+                    "div",
+                    { className: "soundbooster-volume-stats" },
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-stats-title" },
+                        "📊 Volume Override Statistics"
+                    ),
+                    React.createElement(
+                        "p",
+                        { className: "soundbooster-stats-text" },
+                        `You currently have custom volume settings for ${volumeOverrideCount} user${volumeOverrideCount !== 1 ? 's' : ''}. These settings will be preserved when you export/import your configuration.`
+                    )
+                ),
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-backup-section" },
+                    React.createElement(
+                        "h3",
+                        { className: "soundbooster-backup-title" },
+                        "Backup & Restore Configuration"
+                    ),
+                    React.createElement(
+                        "p",
+                        { className: "soundbooster-backup-desc" },
+                        "Export your current settings and volume overrides to a JSON file, or import a previously saved configuration. This includes all your custom user volume settings."
+                    ),
+                    React.createElement(
+                        "div",
+                        { className: "soundbooster-button-row" },
+                        React.createElement(
+                            "button",
+                            {
+                                className: "soundbooster-button soundbooster-button-primary",
+                                onClick: exportSettings,
+                                disabled: isExporting
+                            },
+                            isExporting ? "⏳ Exporting..." : "💾 Export Settings"
+                        ),
+                        React.createElement(
+                            "label",
+                            { className: "soundbooster-file-label" },
+                            isImporting ? "⏳ Importing..." : "📁 Import Settings",
+                            React.createElement("input", {
+                                ref: fileInputRef,
+                                type: "file",
+                                className: "soundbooster-file-input",
+                                accept: ".json",
+                                onChange: importSettings,
+                                disabled: isImporting
+                            })
+                        )
+                    )
+                ),
+                
+                React.createElement(
+                    "div",
+                    { className: "soundbooster-button-row" },
+                    React.createElement(
+                        "button",
+                        {
+                            className: "soundbooster-button soundbooster-button-danger",
+                            onClick: resetSettings
+                        },
+                        "🔄 Reset All Settings"
+                    )
+                )
+            );
+        }
+    };
+};
+
+const index = createPlugin(main);
 
 module.exports = index;
 
