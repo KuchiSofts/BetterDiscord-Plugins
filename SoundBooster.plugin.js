@@ -1,11 +1,12 @@
 /**
  * @name SoundBooster
  * @author KuchiS
- * @version 3.0
- * @description Manually adjust and save users' and streams' volumes, extending beyond the 200% limit. Adds "Hide Original Volume" setting to remove Discord's built-in slider from the context menu.
+ * @version 3.1
+ * @description High-performance volume enhancement plugin that extends Discord's 200% volume limit. Features intelligent caching, optimized React components, and professional UI design with minimal CPU/memory usage.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
  * @source https://github.com/KuchiSofts/BetterDiscord-Plugins/blob/main/SoundBooster.plugin.js
+ * @updateUrl https://github.com/KuchiSofts/BetterDiscord-Plugins/raw/main/SoundBooster.plugin.js
  */
 
 /*@cc_on @if (@_jscript)
@@ -31,6 +32,30 @@ WScript.Quit();
 @else @*/
 
 "use strict";
+
+/* -------------------------------------------------------------------------- */
+/*                       Professional Plugin Constants                        */
+/* -------------------------------------------------------------------------- */
+
+/** @constant {Object} Plugin performance configuration */
+const PLUGIN_CONFIG = {
+    CACHE_SIZE_LIMIT: 100,
+    DEBOUNCE_SAVE_MS: 100,
+    STARTUP_DELAY_MS: 50,
+    BATCH_SIZE: 10,
+    THROTTLE_MS: 50,
+    UPDATE_INTERVAL_MS: 8
+};
+
+/** @constant {Object} Volume control limits and defaults */
+const VOLUME_CONSTANTS = {
+    DISCORD_MAX_PERC: 200,
+    DEFAULT_MAX_USER: 1000,
+    DEFAULT_MAX_STREAM: 1000,
+    DEFAULT_STEP: 100,
+    MIN_VOLUME: 0,
+    MAX_VOLUME: 10000
+};
 
 /* -------------------------------------------------------------------------- */
 /*                              Plugin Boilerplate                             */
@@ -364,8 +389,7 @@ const fetchDiscordModules = () => {
         };
     }
     
-    // Use more efficient caching with size limits
-    const MAX_CACHE_SIZE = 100;
+    // Use more efficient caching with professional size limits
     const percCache = new Map();
     const ampCache = new Map();
     
@@ -379,7 +403,7 @@ const fetchDiscordModules = () => {
             const result = AudioConvert.amplitudeToPerceptual(amplitude);
             
             // Limit cache size to prevent memory bloat
-            if (percCache.size >= MAX_CACHE_SIZE) {
+            if (percCache.size >= PLUGIN_CONFIG.CACHE_SIZE_LIMIT) {
                 const firstKey = percCache.keys().next().value;
                 percCache.delete(firstKey);
             }
@@ -393,7 +417,7 @@ const fetchDiscordModules = () => {
             }
             const result = AudioConvert.perceptualToAmplitude(db);
             
-            if (ampCache.size >= MAX_CACHE_SIZE) {
+            if (ampCache.size >= PLUGIN_CONFIG.CACHE_SIZE_LIMIT) {
                 const firstKey = ampCache.keys().next().value;
                 ampCache.delete(firstKey);
             }
@@ -518,7 +542,7 @@ class SettingsStore {
                 logger.warn("Save failed:", error);
             }
             this.saveTimeout = null;
-        }, 100); // Reduced debounce time for better responsiveness
+        }, PLUGIN_CONFIG.DEBOUNCE_SAVE_MS); // Professional debounce timing
     }
 
     update(settings) {
@@ -701,15 +725,16 @@ const createPlugin = (plugin) => (metaData) => {
 /*                      Actual Plugin-Specific Settings                       */
 /* -------------------------------------------------------------------------- */
 
+/** @constant {SettingsStore} Plugin settings with professional defaults */
 const Settings = createSettings(
     {
         volumeOverrides: {},
-        maxUserVolume: 1000,
-        maxStreamVolume: 1000,
-        defaultUserVolume: 0,
-        defaultStreamVolume: 100,
-        volumeStep: 100,
-        mouseWheelStep: 100,
+        maxUserVolume: VOLUME_CONSTANTS.DEFAULT_MAX_USER,
+        maxStreamVolume: VOLUME_CONSTANTS.DEFAULT_MAX_STREAM,
+        defaultUserVolume: VOLUME_CONSTANTS.MIN_VOLUME,
+        defaultStreamVolume: VOLUME_CONSTANTS.DEFAULT_STEP,
+        volumeStep: VOLUME_CONSTANTS.DEFAULT_STEP,
+        mouseWheelStep: VOLUME_CONSTANTS.DEFAULT_STEP,
         disableExperiment: 0,
         hideOriginalVolume: false
     },
@@ -778,275 +803,67 @@ const tryResetVolumeOverride = (userId, context) => {
 /* -------------------------------------------------------------------------- */
 
 const css = `
-.container-BetterVolume {
-    margin: 4px 8px;
-    padding: 8px 12px;
-    background: linear-gradient(135deg, var(--background-secondary) 0%, var(--background-tertiary) 100%);
-    border-radius: 6px;
-    border: 1px solid var(--background-modifier-accent);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    overflow: hidden;
-    min-height: auto;
-}
+.container-BetterVolume{margin:4px 8px;padding:8px 12px;background:linear-gradient(135deg,var(--background-secondary) 0%,var(--background-tertiary) 100%);border-radius:6px;border:1px solid var(--background-modifier-accent);box-shadow:0 2px 6px rgba(0,0,0,.1);display:flex;flex-direction:column;gap:6px;transition:all .2s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden;min-height:auto}
 
-.container-BetterVolume::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
-    opacity: 0.6;
-}
+.container-BetterVolume::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,var(--brand-experiment) 0%,var(--brand-experiment-560) 100%);opacity:.6}
 
-.container-BetterVolume:hover {
-    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
-    border-color: var(--brand-experiment-360);
-}
+.container-BetterVolume:hover{box-shadow:0 3px 8px rgba(0,0,0,.15);border-color:var(--brand-experiment-360)}
 
-.label-BetterVolume {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--header-primary);
-    margin: 0 0 4px 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    letter-spacing: 0.02em;
-}
+.label-BetterVolume{font-size:11px;font-weight:600;color:var(--header-primary);margin:0 0 4px 0;display:flex;align-items:center;gap:6px;letter-spacing:.02em}
 
-.label-BetterVolume::before {
-    content: '';
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: var(--brand-experiment);
-    box-shadow: 0 0 4px var(--brand-experiment);
-}
+.label-BetterVolume::before{content:'';width:3px;height:3px;border-radius:50%;background:var(--brand-experiment);box-shadow:0 0 4px var(--brand-experiment)}
 
-.slider-BetterVolume {
-    width: 100%;
-    height: 4px;
-    margin: 0 0 6px 0;
-    background: var(--background-modifier-accent);
-    border-radius: 2px;
-    outline: none;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    position: relative;
-    appearance: none;
-    -webkit-appearance: none;
-}
+.slider-BetterVolume{width:100%;height:4px;margin:0 0 6px 0;background:var(--background-modifier-accent);border-radius:2px;outline:none;cursor:pointer;transition:all .2s ease;position:relative;appearance:none;-webkit-appearance:none}
 
-.slider-BetterVolume::-webkit-slider-track {
-    width: 100%;
-    height: 4px;
-    background: linear-gradient(90deg, var(--background-modifier-accent) 0%, var(--background-modifier-selected) 100%);
-    border-radius: 2px;
-    border: none;
-}
+.slider-BetterVolume::-webkit-slider-track{width:100%;height:4px;background:linear-gradient(90deg,var(--background-modifier-accent) 0%,var(--background-modifier-selected) 100%);border-radius:2px;border:none}
 
-.slider-BetterVolume::-webkit-slider-thumb {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
-    border: 2px solid var(--background-primary);
-    cursor: pointer;
-    box-shadow: 0 1px 4px rgba(88, 101, 242, 0.3);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-}
+.slider-BetterVolume::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--brand-experiment) 0%,var(--brand-experiment-560) 100%);border:2px solid var(--background-primary);cursor:pointer;box-shadow:0 1px 4px rgba(88,101,242,.3);transition:all .2s cubic-bezier(.4,0,.2,1);position:relative}
 
-.slider-BetterVolume::-webkit-slider-thumb:hover {
-    transform: scale(1.05);
-    box-shadow: 0 2px 6px rgba(88, 101, 242, 0.4), 0 0 0 3px rgba(88, 101, 242, 0.15);
-}
+.slider-BetterVolume::-webkit-slider-thumb:hover{transform:scale(1.05);box-shadow:0 2px 6px rgba(88,101,242,.4),0 0 0 3px rgba(88,101,242,.15)}
 
-.slider-BetterVolume::-webkit-slider-thumb:active {
-    transform: scale(1.0);
-    box-shadow: 0 1px 3px rgba(88, 101, 242, 0.5), 0 0 0 4px rgba(88, 101, 242, 0.2);
-}
+.slider-BetterVolume::-webkit-slider-thumb:active{transform:scale(1);box-shadow:0 1px 3px rgba(88,101,242,.5),0 0 0 4px rgba(88,101,242,.2)}
 
-.slider-BetterVolume::-moz-range-track {
-    width: 100%;
-    height: 4px;
-    background: linear-gradient(90deg, var(--background-modifier-accent) 0%, var(--background-modifier-selected) 100%);
-    border-radius: 2px;
-    border: none;
-}
+.slider-BetterVolume::-moz-range-track{width:100%;height:4px;background:linear-gradient(90deg,var(--background-modifier-accent) 0%,var(--background-modifier-selected) 100%);border-radius:2px;border:none}
 
-.slider-BetterVolume::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--brand-experiment) 0%, var(--brand-experiment-560) 100%);
-    border: 2px solid var(--background-primary);
-    cursor: pointer;
-    box-shadow: 0 1px 4px rgba(88, 101, 242, 0.3);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
+.slider-BetterVolume::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--brand-experiment) 0%,var(--brand-experiment-560) 100%);border:2px solid var(--background-primary);cursor:pointer;box-shadow:0 1px 4px rgba(88,101,242,.3);transition:all .2s cubic-bezier(.4,0,.2,1)}
 
-.slider-BetterVolume:hover {
-    background: var(--background-modifier-selected);
-}
+.slider-BetterVolume:hover{background:var(--background-modifier-selected)}
 
-.volume-input-container {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--background-primary);
-    border-radius: 4px;
-    padding: 4px 8px;
-    border: 1px solid var(--background-modifier-accent);
-    transition: all 0.2s ease;
-}
+.volume-input-container{display:flex;align-items:center;gap:6px;background:var(--background-primary);border-radius:4px;padding:4px 8px;border:1px solid var(--background-modifier-accent);transition:all .2s ease}
 
-.volume-input-container:hover {
-    border-color: var(--brand-experiment-360);
-    background: var(--background-secondary);
-}
+.volume-input-container:hover{border-color:var(--brand-experiment-360);background:var(--background-secondary)}
 
-.volume-input-container:focus-within {
-    border-color: var(--brand-experiment);
-    box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.2);
-}
+.volume-input-container:focus-within{border-color:var(--brand-experiment);box-shadow:0 0 0 2px rgba(88,101,242,.2)}
 
-.input-BetterVolume {
-    width: 45px;
-    background: transparent;
-    border: none;
-    color: var(--text-normal);
-    font-weight: 500;
-    font-size: 12px;
-    text-align: center;
-    outline: none;
-    font-family: var(--font-mono);
-    letter-spacing: 0.3px;
-}
+.input-BetterVolume{width:45px;background:transparent;border:none;color:var(--text-normal);font-weight:500;font-size:12px;text-align:center;outline:none;font-family:var(--font-mono);letter-spacing:.3px}
 
-.input-BetterVolume::-webkit-inner-spin-button,
-.input-BetterVolume::-webkit-outer-spin-button {
-    opacity: 0.6;
-    height: 16px;
-    cursor: pointer;
-    filter: brightness(1.1);
-}
+.input-BetterVolume::-webkit-inner-spin-button,.input-BetterVolume::-webkit-outer-spin-button{opacity:.6;height:16px;cursor:pointer;filter:brightness(1.1)}
 
-.volume-percentage {
-    font-size: 10px;
-    color: var(--text-muted);
-    font-weight: 500;
-    min-width: 12px;
-}
+.volume-percentage{font-size:10px;color:var(--text-muted);font-weight:500;min-width:12px}
 
-.volume-icon {
-    width: 14px;
-    height: 14px;
-    opacity: 0.8;
-    filter: brightness(1.1);
-}
+.volume-icon{width:14px;height:14px;opacity:.8;filter:brightness(1.1)}
 
-/* Volume level indicators */
-.container-BetterVolume[data-volume-level="low"] .label-BetterVolume::before {
-    background: var(--status-warning);
-    box-shadow: 0 0 6px var(--status-warning);
-}
+.container-BetterVolume[data-volume-level="low"] .label-BetterVolume::before{background:var(--status-warning);box-shadow:0 0 6px var(--status-warning)}
 
-.container-BetterVolume[data-volume-level="medium"] .label-BetterVolume::before {
-    background: var(--brand-experiment);
-    box-shadow: 0 0 6px var(--brand-experiment);
-}
+.container-BetterVolume[data-volume-level="medium"] .label-BetterVolume::before{background:var(--brand-experiment);box-shadow:0 0 6px var(--brand-experiment)}
 
-.container-BetterVolume[data-volume-level="high"] .label-BetterVolume::before {
-    background: var(--status-positive);
-    box-shadow: 0 0 6px var(--status-positive);
-}
+.container-BetterVolume[data-volume-level="high"] .label-BetterVolume::before{background:var(--status-positive);box-shadow:0 0 6px var(--status-positive)}
 
-.container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before {
-    background: var(--status-danger);
-    box-shadow: 0 0 6px var(--status-danger);
-    animation: pulse-danger 2s infinite;
-}
+.container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before{background:var(--status-danger);box-shadow:0 0 6px var(--status-danger);animation:pulse-danger 2s infinite}
 
-@keyframes pulse-danger {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-}
+@keyframes pulse-danger{0%,100%{opacity:1}50%{opacity:.6}}
 
-/* Responsive design for smaller context menus */
-@media (max-width: 300px) {
-    .container-BetterVolume {
-        margin: 3px 6px;
-        padding: 6px 8px;
-    }
-    
-    .input-BetterVolume {
-        width: 40px;
-        font-size: 11px;
-    }
-    
-    .volume-input-container {
-        padding: 3px 6px;
-    }
-}
+@media (max-width:300px){.container-BetterVolume{margin:3px 6px;padding:6px 8px}.input-BetterVolume{width:40px;font-size:11px}.volume-input-container{padding:3px 6px}}
 
-/* Enhanced focus states for accessibility */
-.slider-BetterVolume:focus {
-    outline: 2px solid var(--brand-experiment);
-    outline-offset: 2px;
-}
+.slider-BetterVolume:focus{outline:2px solid var(--brand-experiment);outline-offset:2px}
 
-.input-BetterVolume:focus {
-    color: var(--text-normal);
-}
+.input-BetterVolume:focus{color:var(--text-normal)}
 
-/* Dark theme compatibility */
-@media (prefers-color-scheme: dark) {
-    .container-BetterVolume {
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
-    }
-    
-    .container-BetterVolume:hover {
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), 0 3px 8px rgba(0, 0, 0, 0.2);
-    }
-}
+@media (prefers-color-scheme:dark){.container-BetterVolume{box-shadow:0 4px 12px rgba(0,0,0,.25),0 2px 4px rgba(0,0,0,.15)}.container-BetterVolume:hover{box-shadow:0 6px 20px rgba(0,0,0,.3),0 3px 8px rgba(0,0,0,.2)}}
 
-/* High contrast support */
-@media (prefers-contrast: high) {
-    .container-BetterVolume {
-        border: 2px solid var(--brand-experiment);
-    }
-    
-    .slider-BetterVolume::-webkit-slider-thumb {
-        border: 3px solid var(--background-primary);
-    }
-    
-    .volume-input-container {
-        border: 2px solid var(--background-modifier-accent);
-    }
-}
+@media (prefers-contrast:high){.container-BetterVolume{border:2px solid var(--brand-experiment)}.slider-BetterVolume::-webkit-slider-thumb{border:3px solid var(--background-primary)}.volume-input-container{border:2px solid var(--background-modifier-accent)}}
 
-/* Smooth animations preference */
-@media (prefers-reduced-motion: reduce) {
-    .container-BetterVolume,
-    .slider-BetterVolume::-webkit-slider-thumb,
-    .volume-input-container {
-        transition: none;
-    }
-    
-    .container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before {
-        animation: none;
-    }
-}
+@media (prefers-reduced-motion:reduce){.container-BetterVolume,.slider-BetterVolume::-webkit-slider-thumb,.volume-input-container{transition:none}.container-BetterVolume[data-volume-level="extreme"] .label-BetterVolume::before{animation:none}}
 .soundbooster-settings{padding:24px;background:var(--background-secondary-alt);border-radius:12px;color:#ffffff;font-family:var(--font-primary);max-width:900px;margin:0 auto;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .soundbooster-settings *{color:#ffffff!important}
 .soundbooster-settings-header{margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid var(--background-modifier-accent);background:linear-gradient(135deg,var(--brand-experiment),var(--brand-experiment-560));padding:20px;border-radius:8px;margin:-24px -24px 28px -24px}
@@ -1218,7 +1035,8 @@ const createVolumeControl = ({ React }) => {
     });
 };
 
-const MAX_VOLUME_PERC = 200;
+// Legacy constant reference for backwards compatibility
+const DISCORD_MAX_VOLUME_PERC = VOLUME_CONSTANTS.DISCORD_MAX_PERC;
 
 const applyDefaultVolumeToMembers = (channelId, guildId, MediaEngineStore, MediaEngineActions, AudioConvert) => {
     if (!channelId) return;
@@ -1239,8 +1057,8 @@ const applyDefaultVolumeToMembers = (channelId, guildId, MediaEngineStore, Media
             });
         };
         
-        // Split into batches of 10 users
-        const batchSize = 10;
+        // Split into professional batch sizes for optimal performance
+        const batchSize = PLUGIN_CONFIG.BATCH_SIZE;
         for (let i = 0; i < members.length; i += batchSize) {
             const batch = members.slice(i, i + batchSize);
             setTimeout(() => processBatch(batch), i / batchSize); // Stagger processing
@@ -1296,6 +1114,9 @@ const createVolumeDispatcher = (Dispatcher, AudioConvert) => {
 /*                            Settings Panel UI                               */
 /* -------------------------------------------------------------------------- */
 
+// Global reference for cleanup
+let globalAudioConvert = null;
+
 const main = () => {
     const {
         Dispatcher,
@@ -1312,6 +1133,9 @@ const main = () => {
         ContextMenu
     } = fetchDiscordModules();
     
+    // Store reference for cleanup
+    globalAudioConvert = AudioConvert;
+    
     Settings.setDependencies(LegacyModules);
     
     const SettingsContainer = createSettingsContainer({
@@ -1325,7 +1149,7 @@ const main = () => {
     
     const VolumeControl = createVolumeControl({ React });
     
-    const MAX_VOLUME_AMP = AudioConvert.perceptualToAmplitude(MAX_VOLUME_PERC);
+    const MAX_VOLUME_AMP = AudioConvert.perceptualToAmplitude(DISCORD_MAX_VOLUME_PERC);
     
     const dispatchVolumeOverrides = createVolumeDispatcher(Dispatcher, AudioConvert);
     
@@ -1383,11 +1207,11 @@ const main = () => {
             Dispatcher.subscribe("VOICE_CHANNEL_SELECT", voiceChannelHandler);
         };
         
-        // Initialize handlers after a short delay to prevent blocking startup
-        setTimeout(initializeHandlers, 50);
+        // Initialize handlers after professional delay to prevent blocking startup
+        setTimeout(initializeHandlers, PLUGIN_CONFIG.STARTUP_DELAY_MS);
         
-        // Dispatch overrides after initialization
-        setTimeout(dispatchVolumeOverrides, 100);
+        // Dispatch overrides after initialization with staggered timing
+        setTimeout(dispatchVolumeOverrides, PLUGIN_CONFIG.STARTUP_DELAY_MS * 2);
 
         waitFor((exported) => exported.actions && hasSetVolume(exported.actions), { cacheKey: "AudioSettingsManager" }).then(
             (AudioSettingsManager) => {
@@ -1522,12 +1346,15 @@ const main = () => {
             promiseCache.clear();
             
             // Clear audio conversion cache
-            if (cachedAudioConvert && cachedAudioConvert.clearCache) {
-                cachedAudioConvert.clearCache();
+            if (globalAudioConvert && globalAudioConvert.clearCache) {
+                globalAudioConvert.clearCache();
             }
             
             // Clear settings listeners
             Settings.removeAllListeners();
+            
+            // Clear global reference
+            globalAudioConvert = null;
             
             logger.log("Plugin cleanup completed");
         },
@@ -1544,7 +1371,8 @@ const main = () => {
             // Optimize update callback to prevent unnecessary re-renders
             const updateSetting = React.useCallback((key, value) => {
                 const typedValue = typeof value === "boolean" ? value : Number(value);
-                if (typeof typedValue === "number" && (isNaN(typedValue) || typedValue < 0 || typedValue > 10000)) {
+                if (typeof typedValue === "number" && 
+                    (isNaN(typedValue) || typedValue < VOLUME_CONSTANTS.MIN_VOLUME || typedValue > VOLUME_CONSTANTS.MAX_VOLUME)) {
                     return;
                 }
                 
