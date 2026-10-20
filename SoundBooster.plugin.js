@@ -847,7 +847,8 @@ const hasOverride = (userId, context) =>
 const updateVolumeOverride = (userId, volume, context) => {
     const isNew = !hasOverride(userId, context);
     
-    if (volume > 5) {
+    // Discord stores volumes up to its own cap itself; only boosted volumes need an override
+    if (volume > VOLUME_CONSTANTS.DISCORD_MAX_PERC) {
         Settings.update(current => {
             const volumeOverrides = { ...current.volumeOverrides };
             
