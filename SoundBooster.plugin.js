@@ -380,7 +380,8 @@ const clear = () => BdApi.DOM.removeStyle(getMeta().name);
 /* -------------------------------------------------------------------------- */
 
 const fetchDiscordModules = () => {
-    const Dispatcher = find(byKeys("dispatch", "subscribe"), { cacheKey: "Dispatcher" });
+    // The Dispatcher is a named (non-default) export in current Discord builds
+    const Dispatcher = find(byKeys("dispatch", "subscribe"), { entries: true, cacheKey: "Dispatcher" });
     
     const LegacyModules = demangle(
         {
