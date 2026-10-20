@@ -2074,21 +2074,24 @@ const main = () => {
                     ({ args: [userId], result: menuResult }) => {
                         if (!menuResult) return;
     
-                        const { defaultUserVolume, defaultStreamVolume, hideOriginalVolume } = Settings.current;
+                        const { defaultStreamVolume, hideOriginalVolume } = Settings.current;
     
                         const voiceVolumeAmp = MediaEngineStore.getLocalVolume(userId, "default");
                         const streamVolumeAmp = MediaEngineStore.getLocalVolume(userId, "stream");
     
-                        // Calculate actual volume percentages, handling both regular and custom volumes
-                        let voiceVolume = defaultUserVolume;
+                        // Calculate actual volume percentages, handling both regular and custom volumes.
+                        // Fall back to Discord's own default (100%) for voice; a volume of 0 is shown as 0%.
+                        let voiceVolume = 100;
                         let streamVolume = defaultStreamVolume;
                         
-                        if (voiceVolumeAmp && voiceVolumeAmp > 0) {
-                            const voicePerceptual = AudioConvert.amplitudeToPerceptual(voiceVolumeAmp);
+                        if (typeof voiceVolumeAmp === "number" && voiceVolumeAmp >= 0) {
+                            const voicePerceptual = voiceVolumeAmp > 0 ? AudioConvert.amplitudeToPerceptual(voiceVolumeAmp) : 0;
                             voiceVolume = Math.max(0, Math.round(voicePerceptual));
                         }
                         
-                        if (streamVolumeAmp && streamVolumeAmp > 0) {
+                        if (typeof streamVolumeAmp === "number" && streamVolumeAmp === 0) {
+                            streamVolume = 0;
+                        } else if (streamVolumeAmp && streamVolumeAmp > 0) {
                             const streamPerceptual = AudioConvert.amplitudeToPerceptual(streamVolumeAmp);
                             streamVolume = Math.max(0, Math.round(streamPerceptual));
                         }
