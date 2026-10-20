@@ -1948,8 +1948,11 @@ const main = () => {
         // Dispatch overrides after initialization with staggered timing
         startupTimeouts.push(setTimeout(dispatchVolumeOverrides, PLUGIN_CONFIG.STARTUP_DELAY_MS * 2));
 
+        const { signal } = controller;
         waitFor((exported) => exported.actions && hasSetVolume(exported.actions), { cacheKey: "AudioSettingsManager" }).then(
             (AudioSettingsManager) => {
+                // Lookup was aborted, or the plugin was stopped before it resolved
+                if (!AudioSettingsManager || signal.aborted) return;
                 originalHandler = AudioSettingsManager.actions["AUDIO_SET_LOCAL_VOLUME"];
                 const swapped = trySwapHandler(
                     "AUDIO_SET_LOCAL_VOLUME",
@@ -1997,7 +2000,10 @@ const main = () => {
         start() {
             handleVolumeSync();
     
+            const { signal } = controller;
             waitFor(useUserVolumeItemFilter, { resolve: false, cacheKey: "useUserVolumeItemFilter" }).then((result) => {
+                // Lookup was aborted, or the plugin was stopped before it resolved
+                if (!result || signal.aborted) return;
                 const useUserVolumeItem = resolveKey(result, useUserVolumeItemFilter);
                 
                 const createVolumeControls = ReactRef.memo(({ userId, voiceVolume, streamVolume }) => {
