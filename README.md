@@ -37,7 +37,7 @@ Discord's per-user volume slider stops at 200%. SoundBooster lets you go further
 
 ### How boosting works
 
-Discord clamps local volume at 200%. SoundBooster sits in front of Discord's `AUDIO_SET_LOCAL_VOLUME` handler: when you pick a value above the cap, it saves the real value as an override, passes the maximum Discord accepts to the client UI, and re-dispatches the boosted volume to the audio engine on startup and whenever your Discord settings sync. Dropping a user back to 200% or below removes the override.
+Discord clamps local volume at 200%. SoundBooster sits in front of the `AUDIO_SET_LOCAL_VOLUME` handler that saves volumes to your Discord settings: when you pick a value above the cap, it saves the real value as an override, lets Discord store the 200% maximum, and re-dispatches the boosted volume to the audio engine on startup and whenever your Discord settings sync. Dropping a user back to 200% or below removes the override.
 
 > Very high volumes can clip and distort, and they can be loud. Raise volume gradually.
 
@@ -50,8 +50,8 @@ Open **User Settings > Plugins > SoundBooster > Settings**:
 | Max User Volume | 1000% | Upper limit for voice volume controls. |
 | Max Stream Volume | 1000% | Upper limit for stream volume controls. |
 | Default User Volume | 0 (off) | When you join a channel, sets this volume for users you never adjusted. |
-| Default Stream Volume | 100% | Starting value shown for stream volume. |
-| Volume Step / Mouse Wheel Step | 100 | How much each step or scroll changes the volume. |
+| Default Stream Volume | 100% | Value shown for stream volume when Discord reports none for that user. |
+| Volume Step / Mouse Wheel Step | 100 | How much each slider step or scroll changes the volume. Typed values are kept exact. |
 | Hide Discord's Built-in Volume Slider | Off | Shows only SoundBooster's controls in the context menu. |
 | Show Real-Time Volume Meter | On | Shows the live volume meter. |
 | Smart Save Delay | 3 s | Waits this long after the last change before saving. |
@@ -102,7 +102,7 @@ Settings are saved automatically.
 4. Move the downloaded file into that folder.
 5. Enable the plugin under **User Settings > Plugins**.
 
-BetterDiscord checks each plugin's `@updateUrl` and offers updates when a new version lands on `main`.
+These plugins are not listed in the official BetterDiscord plugin store, so BetterDiscord's built-in updater does not update them. To update, download the file again from the [table above](#plugins) and replace the old one; your settings are kept. Each plugin's `@updateUrl` points to the latest version on `main` for update tools that support it.
 
 ## Compatibility
 
