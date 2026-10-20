@@ -1,11 +1,12 @@
 /**
  * @name VoiceChatFollower
  * @author KuchiS
- * @version 1.1
- * @description Adds a "Follow Me" checkbox to the user context menu in voice chat, allowing you to automatically follow a user to the voice channel they join.
+ * @version 1.2.0
+ * @description Adds a "Follow User" option to the user context menu that automatically moves you into whichever voice channel that user joins.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
  * @source https://github.com/KuchiSofts/BetterDiscord-Plugins/blob/main/VoiceChatFollower.plugin.js
+ * @updateUrl https://github.com/KuchiSofts/BetterDiscord-Plugins/raw/main/VoiceChatFollower.plugin.js
  **/
 
 /*
@@ -127,21 +128,159 @@ const unpatchAll = () => {
 const inject = styles => typeof styles === "string" && BdApi.DOM.addStyle(getMeta().name, styles);
 const clear = () => BdApi.DOM.removeStyle(getMeta().name);
 
-const ExperimentStore = byName$1("ExperimentStore");
 const { React } = BdApi;
 
 const {
     CheckboxItem: MenuCheckboxItem,
 } = BdApi.ContextMenu;
 
+/* -------------------------------------------------------------------------- */
+/*                                  Settings                                  */
+/* -------------------------------------------------------------------------- */
+
+const DEFAULT_CONFIG = {
+    checkInterval: 2000, // Fallback polling interval for the followed user's voice channel (in milliseconds)
+    inactivityTimeout: 60 // Stop following after the user has been out of voice this long (in seconds)
+};
+const MIN_CHECK_INTERVAL = 500;
+const MIN_INACTIVITY_TIMEOUT = 5;
+
+let config = { ...DEFAULT_CONFIG };
+
+const loadConfig = () => {
+    const saved = BdApi.Data.load(getMeta().name, "settings") ?? {};
+    config = { ...DEFAULT_CONFIG, ...saved };
+};
+const saveConfig = () => BdApi.Data.save(getMeta().name, "settings", config);
+
+/* -------------------------------------------------------------------------- */
+/*                               Discord Modules                              */
+/* -------------------------------------------------------------------------- */
+
+const getStore = (name) => BdApi.Webpack.getStore?.(name) ?? byName$1(name);
+
+let VoiceStateStore = null;
+let SelectedChannelStore = null;
+let ChannelStore = null;
+let UserStore = null;
+let Dispatcher = null;
+let VoiceChannelActions = null;
+
+const fetchModules = () => {
+    VoiceStateStore = getStore("VoiceStateStore");
+    SelectedChannelStore = getStore("SelectedChannelStore");
+    ChannelStore = getStore("ChannelStore");
+    UserStore = getStore("UserStore");
+    Dispatcher = find((m) => m?.dispatch instanceof Function && m?.subscribe instanceof Function && m?.unsubscribe instanceof Function);
+    VoiceChannelActions = find((m) => m?.selectVoiceChannel instanceof Function);
+};
+
+/* -------------------------------------------------------------------------- */
+/*                                Follow Logic                                */
+/* -------------------------------------------------------------------------- */
+
+const RETRY_SAME_CHANNEL_MS = 10000;
+
 let followedUserId = null;
 let followInterval = null;
+let lastSeenTime = 0;
+let lastAttempt = { channelId: null, time: 0 };
 
-// Configuration options
-let config = {
-    checkInterval: 2000, // Interval duration for checking user's voice channel (in milliseconds)
-    inactivityTimeout: 60 // Inactivity timeout duration (in seconds)
+const toast = (message, type = "info") => BdApi.UI?.showToast?.(message, { type });
+
+const getUserName = (userId) => {
+    const user = UserStore?.getUser?.(userId);
+    return user?.globalName ?? user?.username ?? userId;
 };
+
+const getUserVoiceChannelId = (userId) => VoiceStateStore?.getVoiceStateForUser?.(userId)?.channelId ?? null;
+
+const getOwnVoiceChannelId = () => SelectedChannelStore?.getVoiceChannelId?.() ?? null;
+
+const getChannelName = (channelId) => ChannelStore?.getChannel?.(channelId)?.name ?? channelId;
+
+const syncWithFollowedUser = () => {
+    if (!followedUserId) return;
+
+    try {
+        const targetChannelId = getUserVoiceChannelId(followedUserId);
+
+        if (!targetChannelId) {
+            const elapsedSeconds = (Date.now() - lastSeenTime) / 1000;
+            if (elapsedSeconds > config.inactivityTimeout) {
+                const name = getUserName(followedUserId);
+                log(`Stopped following ${followedUserId}: not in voice for ${config.inactivityTimeout}s`);
+                stopFollowing();
+                toast(`Stopped following ${name} (not in a voice channel)`, "warning");
+            }
+            return;
+        }
+
+        lastSeenTime = Date.now();
+
+        if (targetChannelId === getOwnVoiceChannelId()) return;
+
+        // Avoid hammering a channel we cannot join (full, no permission, ...)
+        const now = Date.now();
+        if (lastAttempt.channelId === targetChannelId && now - lastAttempt.time < RETRY_SAME_CHANNEL_MS) return;
+        lastAttempt = { channelId: targetChannelId, time: now };
+
+        if (!VoiceChannelActions?.selectVoiceChannel) {
+            throw new Error("selectVoiceChannel action not found");
+        }
+        VoiceChannelActions.selectVoiceChannel(targetChannelId);
+        log(`Following ${followedUserId} into voice channel ${targetChannelId}`);
+        toast(`Joining ${getUserName(followedUserId)} in ${getChannelName(targetChannelId)}`);
+    } catch (error) {
+        console.error(`[${getMeta().name}] Error while following user:`, error);
+    }
+};
+
+const onVoiceStateUpdates = ({ voiceStates }) => {
+    if (!followedUserId || !Array.isArray(voiceStates)) return;
+    if (voiceStates.some((state) => state?.userId === followedUserId)) {
+        // Let the stores process the update before reading from them
+        setTimeout(syncWithFollowedUser, 0);
+    }
+};
+
+const startPolling = () => {
+    clearInterval(followInterval);
+    followInterval = setInterval(syncWithFollowedUser, config.checkInterval);
+};
+
+function followUser(userId) {
+    if (!userId || followedUserId === userId) return;
+
+    stopFollowing(); // Stop following the current user (if any)
+
+    followedUserId = userId;
+    lastSeenTime = Date.now();
+    lastAttempt = { channelId: null, time: 0 };
+
+    Dispatcher?.subscribe?.("VOICE_STATE_UPDATES", onVoiceStateUpdates);
+    startPolling(); // Fallback in case an event is missed; also drives the inactivity timeout
+
+    log(`Started following ${userId}`);
+    toast(`Following ${getUserName(userId)}`, "success");
+    syncWithFollowedUser();
+}
+
+function stopFollowing() {
+    clearInterval(followInterval);
+    followInterval = null;
+    Dispatcher?.unsubscribe?.("VOICE_STATE_UPDATES", onVoiceStateUpdates);
+
+    if (followedUserId) {
+        log(`Stopped following ${followedUserId}`);
+    }
+    followedUserId = null;
+    lastAttempt = { channelId: null, time: 0 };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Settings Panel                               */
+/* -------------------------------------------------------------------------- */
 
 const css = `
 .VoiceChatFollower-settings {
@@ -154,29 +293,29 @@ const css = `
     color: var(--header-primary);
 }
 
-.setting-item {
+.VoiceChatFollower-settings .setting-item {
     display: flex;
     align-items: center;
     margin-bottom: 15px;
 }
 
-.setting-label {
+.VoiceChatFollower-settings .setting-label {
     flex: 1;
     margin-right: 10px;
 }
 
-.setting-label label {
+.VoiceChatFollower-settings .setting-label label {
     font-weight: 500;
     color: var(--text-normal);
 }
 
-.setting-help {
+.VoiceChatFollower-settings .setting-help {
     font-size: 12px;
     color: var(--text-muted);
     margin-top: 5px;
 }
 
-.setting-input input[type="number"] {
+.VoiceChatFollower-settings .setting-input input[type="number"] {
     width: 80px;
     padding: 5px;
     border-radius: 3px;
@@ -186,97 +325,73 @@ const css = `
 }
 `;
 
-const VoiceStateStore = byName$1("VoiceStateStore");
-const ChannelStore = byName$1("ChannelStore");
-const VoiceChannelActions = find(m => m.selectVoiceChannel);
+const NumberSetting = ({ id, label, help, value, min, onChange }) => {
+    const [draft, setDraft] = React.useState(String(value));
 
-function findUserVoiceChannel(userId) {
-  const voiceChannels = document.querySelectorAll(".containerDefault__3187b");
-  for (const channelElement of voiceChannels) {
-    const userElements = channelElement.querySelectorAll(".voiceUser__0470a");
-    for (const userElement of userElements) {
-      const avatarElement = userElement.querySelector(".content_b60865 .userAvatar_c4f005");
-      if (avatarElement && avatarElement.style.backgroundImage.includes(userId)) {
-        const linkElement = channelElement.querySelector(".link__95dc0");
-        if (linkElement) {
-          const channelId = linkElement.getAttribute("data-list-item-id").replace("channels___", "");
-          if (channelId) {
-            return {
-              element: linkElement,
-              id: channelId,
-              userElement: userElement
-            };
-          }
+    const commit = () => {
+        const parsed = parseInt(draft, 10);
+        const next = Number.isFinite(parsed) ? Math.max(min, parsed) : value;
+        setDraft(String(next));
+        if (next !== value) onChange(next);
+    };
+
+    return React.createElement("div", { className: "setting-item" },
+        React.createElement("div", { className: "setting-label" },
+            React.createElement("label", { htmlFor: id }, label),
+            React.createElement("div", { className: "setting-help" }, help)
+        ),
+        React.createElement("div", { className: "setting-input" },
+            React.createElement("input", {
+                id,
+                type: "number",
+                min,
+                value: draft,
+                onChange: (e) => setDraft(e.target.value),
+                onBlur: commit,
+                onKeyDown: (e) => {
+                    if (e.key === "Enter") commit();
+                }
+            })
+        )
+    );
+};
+
+const SettingsPanel = () => {
+    const [current, setCurrent] = React.useState({ ...config });
+
+    const update = (key, value) => {
+        config = { ...config, [key]: value };
+        saveConfig();
+        setCurrent({ ...config });
+        if (key === "checkInterval" && followedUserId) {
+            startPolling(); // Apply the new interval immediately
         }
-      }
-    }
-  }
-  return null;
-}
+    };
 
-function followUser(userId) {
-  if (followedUserId === userId) return;
+    return React.createElement("div", { className: "VoiceChatFollower-settings" },
+        React.createElement("h3", null, "VoiceChatFollower Settings"),
+        React.createElement(NumberSetting, {
+            id: "checkInterval",
+            label: "Check Interval (ms)",
+            help: `How often to re-check the followed user's voice channel, as a fallback to live updates (min ${MIN_CHECK_INTERVAL}).`,
+            value: current.checkInterval,
+            min: MIN_CHECK_INTERVAL,
+            onChange: (value) => update("checkInterval", value)
+        }),
+        React.createElement(NumberSetting, {
+            id: "inactivityTimeout",
+            label: "Inactivity Timeout (s)",
+            help: `Stop following when the user has not been in a voice channel for this long (min ${MIN_INACTIVITY_TIMEOUT}).`,
+            value: current.inactivityTimeout,
+            min: MIN_INACTIVITY_TIMEOUT,
+            onChange: (value) => update("inactivityTimeout", value)
+        })
+    );
+};
 
-  try {
-    stopFollowing(); // Stop following the current user (if any)
-
-    followedUserId = userId;
-
-    const voiceChannel = findUserVoiceChannel(userId);
-    if (voiceChannel) {
-      voiceChannel.element.click();
-      voiceChannel.userElement.classList.add("followedUser");
-      log(`Joined voice channel: ${voiceChannel.id}`);
-    } else {
-      throw new Error(`Voice channel not found for user ${userId}`);
-    }
-
-    let lastSeenTime = Date.now();
-
-    followInterval = setInterval(() => {
-      const currentVoiceChannel = findUserVoiceChannel(userId);
-      if (currentVoiceChannel) {
-        const channelName = currentVoiceChannel.element.querySelector(".name__8d1ec")?.textContent;
-        log(`User ${userId} is currently in voice channel ${channelName} (${currentVoiceChannel.id})`);
-
-        if (!currentVoiceChannel.userElement.classList.contains("followedUser")) {
-          currentVoiceChannel.userElement.classList.add("followedUser");
-        }
-
-        if (currentVoiceChannel.id !== voiceChannel?.id) {
-          VoiceChannelActions.selectVoiceChannel(currentVoiceChannel.id);
-          log(`Joined new voice channel: ${currentVoiceChannel.id}`);
-        }
-
-        lastSeenTime = Date.now();
-      } else {
-        log(`User ${userId} is not in any voice channel`);
-
-        const elapsedTime = (Date.now() - lastSeenTime) / 1000; // Elapsed time in seconds
-        if (elapsedTime > config.inactivityTimeout) {
-          stopFollowing();
-          log(`Stopped following user ${userId} due to inactivity`);
-        }
-      }
-    }, config.checkInterval);
-  } catch (error) {
-    console.error("Error in followUser:", error);
-  }
-}
-
-function stopFollowing() {
-  try {
-    const followedUserElement = document.querySelector(".voiceUser__0470a.followedUser");
-    if (followedUserElement) {
-      followedUserElement.classList.remove("followedUser");
-    }
-    
-    followedUserId = null;
-    clearInterval(followInterval);
-  } catch (error) {
-    console.error("Error in stopFollowing:", error);
-  }
-}
+/* -------------------------------------------------------------------------- */
+/*                                   Plugin                                   */
+/* -------------------------------------------------------------------------- */
 
 const createPlugin = (plugin) => (meta) => {
     setMeta(meta);
@@ -305,33 +420,36 @@ const createPlugin = (plugin) => (meta) => {
 
 const index = createPlugin({
     start() {
+        loadConfig();
+        fetchModules();
+
         const useUserVolumeItemFilter = bySource("user-volume");
 
         waitFor(useUserVolumeItemFilter, {
             resolve: false
         }).then((result) => {
+            if (!result) return;
             const useUserVolumeItem = resolveKey(result, useUserVolumeItemFilter);
             after(...useUserVolumeItem, ({
                 args: [userId],
                 result
             }) => {
-                if (result) {
+                if (result && userId !== UserStore?.getCurrentUser?.()?.id) {
                     return (
                         React.createElement(React.Fragment, null,
                             React.createElement(MenuCheckboxItem, {
                                 id: "user-follow-checkbox",
-                                label: "Follow Me",
+                                label: "Follow User",
                                 checked: followedUserId === userId,
                                 action: () => {
                                     if (followedUserId === userId) {
+                                        const name = getUserName(userId);
                                         stopFollowing();
+                                        toast(`Stopped following ${name}`);
                                     } else {
                                         followUser(userId);
                                     }
-                                    const userContext = document.querySelector("#user-context");
-                                    if (userContext) {
-                                        userContext.remove();
-                                    }
+                                    BdApi.ContextMenu.close?.();
                                 }
                             }),
                             result
@@ -343,46 +461,11 @@ const index = createPlugin({
             });
         });
     },
+    stop() {
+        stopFollowing();
+    },
     styles: css,
-getSettingsPanel: () => {
-    return [
-        React.createElement("div", { className: "VoiceChatFollower-settings" },
-            React.createElement("h3", null, "VoiceChatFollower Settings"),
-            React.createElement("div", { className: "setting-item" },
-                React.createElement("div", { className: "setting-label" },
-                    React.createElement("label", { htmlFor: "checkInterval" }, "Check Interval (ms)"),
-                    React.createElement("div", { className: "setting-help" }, "The interval at which to check the user's voice channel.")
-                ),
-                React.createElement("div", { className: "setting-input" },
-                    React.createElement("input", {
-                        id: "checkInterval",
-                        type: "number",
-                        value: config.checkInterval,
-                        onChange: (e) => {
-                            config.checkInterval = parseInt(e.target.value);
-                        }
-                    })
-                )
-            ),
-            React.createElement("div", { className: "setting-item" },
-                React.createElement("div", { className: "setting-label" },
-                    React.createElement("label", { htmlFor: "inactivityTimeout" }, "Inactivity Timeout (s)"),
-                    React.createElement("div", { className: "setting-help" }, "The duration of inactivity after which to stop following the user.")
-                ),
-                React.createElement("div", { className: "setting-input" },
-                    React.createElement("input", {
-                        id: "inactivityTimeout",
-                        type: "number",
-                        value: config.inactivityTimeout,
-                        onChange: (e) => {
-                            config.inactivityTimeout = parseInt(e.target.value);
-                        }
-                    })
-                )
-            )
-        )
-    ];
-}
+    getSettingsPanel: () => React.createElement(SettingsPanel)
 });
 
 module.exports = index;
