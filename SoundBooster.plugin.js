@@ -2001,6 +2001,8 @@ const main = () => {
 
     return {
         start() {
+            // The save manager is shut down by stop(); re-enable it when the plugin is started again
+            saveManager.isShuttingDown = false;
             handleVolumeSync();
     
             const { signal } = controller;
