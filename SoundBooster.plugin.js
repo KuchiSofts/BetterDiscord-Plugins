@@ -1,7 +1,7 @@
 /**
  * @name SoundBooster
  * @author KuchiS
- * @version 2.6.2
+ * @version 2.6.3
  * @description Lets you set user and stream volumes above Discord's 200% limit, with precise inputs and a live volume meter.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
@@ -1740,25 +1740,35 @@ const getVoiceChannelMemberIds = (channelId, VoiceStateStore, UserStore) => {
         .filter((userId) => userId && userId !== currentUserId);
 };
 
-const applyDefaultVolumeToMembers = (channelId, VoiceStateStore, UserStore, MediaEngineActions, AudioConvert) => {
+const applyDefaultVolumeToMembers = (channelId, VoiceStateStore, UserStore, MediaEngineStore, MediaEngineActions, AudioConvert) => {
     if (!channelId || !MediaEngineActions?.setLocalVolume) return;
-    
+
+    // 0 (the default) disables this feature; 100 is Discord's own default anyway
+    const defaultUserVolume = Number(Settings.current.defaultUserVolume);
+    if (!Number.isFinite(defaultUserVolume) || defaultUserVolume <= 0 || defaultUserVolume === 100) return;
+
     try {
         const members = getVoiceChannelMemberIds(channelId, VoiceStateStore, UserStore);
         if (members.length === 0) return;
-        
-        const { defaultUserVolume } = Settings.current;
+
         const cachedAmplitude = AudioConvert.perceptualToAmplitude(defaultUserVolume);
-        
+
+        // Only touch users whose volume was never changed (no override, still at Discord's 100%)
+        const isUntouched = (userId) => {
+            if (hasOverride(userId, "default")) return false;
+            const current = MediaEngineStore?.getLocalVolume?.(userId, "default");
+            return current === undefined || Math.abs(AudioConvert.amplitudeToPerceptual(current) - 100) < 1;
+        };
+
         // Process in smaller batches to avoid blocking
         const processBatch = (userBatch) => {
             userBatch.forEach((userId) => {
-                if (!hasOverride(userId, "default")) {
+                if (isUntouched(userId)) {
                     MediaEngineActions.setLocalVolume(userId, cachedAmplitude, "default");
                 }
             });
         };
-        
+
         // Split into professional batch sizes for optimal performance
         const batchSize = PLUGIN_CONFIG.BATCH_SIZE;
         for (let i = 0; i < members.length; i += batchSize) {
@@ -1917,7 +1927,7 @@ const main = () => {
         // Debounce voice channel changes to reduce overhead
         clearTimeout(voiceChannelTimeout);
         voiceChannelTimeout = setTimeout(() => {
-            applyDefaultVolumeToMembers(channelId, VoiceStateStore, UserStore, MediaEngineActions, AudioConvert);
+            applyDefaultVolumeToMembers(channelId, VoiceStateStore, UserStore, MediaEngineStore, MediaEngineActions, AudioConvert);
         }, 100);
     };
     
@@ -2255,7 +2265,7 @@ const main = () => {
                         React.createElement(
                             "p",
                             { className: "soundbooster-setting-description" },
-                            "The initial volume level applied to users who don't have custom volume overrides"
+                            "Volume applied when you join a channel to users whose volume you never changed. 0 = off"
                         ),
                         React.createElement("input", {
                             type: "number",
