@@ -1624,8 +1624,12 @@ const createVolumeControl = ({ React, VolumeMeter, volumeProcessor }) => {
             setLocalValue(value);
         }, [value]);
         
-        const handleChange = React.useCallback((newVal) => {
-            const clampedVal = Math.max(min, Math.min(max, Math.round(newVal / volumeStep) * volumeStep));
+        const handleChange = React.useCallback((newVal, snapToStep = true) => {
+            // Ignore incomplete input such as an emptied number box
+            if (!Number.isFinite(newVal)) return;
+            // Slider and wheel snap to the step; typed values are kept exact
+            const steppedVal = snapToStep ? Math.round(newVal / volumeStep) * volumeStep : Math.round(newVal);
+            const clampedVal = Math.max(min, Math.min(max, steppedVal));
             
             // IMMEDIATE visual update for ultra-smooth UI response
             setLocalValue(clampedVal);
@@ -1667,7 +1671,7 @@ const createVolumeControl = ({ React, VolumeMeter, volumeProcessor }) => {
         }, [handleChange]);
         
         const handleInputChange = React.useCallback((e) => {
-            handleChange(parseFloat(e.target.value));
+            handleChange(parseFloat(e.target.value), false);
         }, [handleChange]);
         
         // Determine volume level for styling
