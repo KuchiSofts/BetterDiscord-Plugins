@@ -425,11 +425,13 @@ const index = createPlugin({
         fetchModules();
 
         const useUserVolumeItemFilter = bySource("user-volume");
+        const { signal } = controller;
 
         waitFor(useUserVolumeItemFilter, {
             resolve: false
         }).then((result) => {
-            if (!result) return;
+            // Lookup was aborted, or the plugin was stopped before it resolved
+            if (!result || signal.aborted) return;
             const useUserVolumeItem = resolveKey(result, useUserVolumeItemFilter);
             after(...useUserVolumeItem, ({
                 args: [userId],
