@@ -1609,9 +1609,9 @@ const createVolumeControl = ({ React, VolumeMeter, volumeProcessor }) => {
     return React.memo(({ value, context, min, max, onChange, userId }) => {
         const [localValue, setLocalValue] = React.useState(value);
         
-        // Optimized settings access with minimal dependencies
-        const volumeStep = React.useMemo(() => Settings.current.volumeStep, [Settings.current.volumeStep]);
-        const mouseWheelStep = React.useMemo(() => Settings.current.mouseWheelStep, [Settings.current.mouseWheelStep]);
+        // Optimized settings access with minimal dependencies (a cleared settings box saves 0, so keep steps >= 1)
+        const volumeStep = React.useMemo(() => Math.max(1, Number(Settings.current.volumeStep) || 0), [Settings.current.volumeStep]);
+        const mouseWheelStep = React.useMemo(() => Math.max(1, Number(Settings.current.mouseWheelStep) || 0), [Settings.current.mouseWheelStep]);
         
         const containerRef = React.useRef(null);
         const onChangeRef = React.useRef(onChange);
@@ -2013,8 +2013,9 @@ const main = () => {
                 
                 const createVolumeControls = ReactRef.memo(({ userId, voiceVolume, streamVolume }) => {
                     // Optimized settings access with individual memoization
-                    const maxUserVolume = ReactRef.useMemo(() => Settings.current.maxUserVolume, [Settings.current.maxUserVolume]);
-                    const maxStreamVolume = ReactRef.useMemo(() => Settings.current.maxStreamVolume, [Settings.current.maxStreamVolume]);
+                    // Never let a cleared settings box (saved as 0) lock the controls at 0%
+                    const maxUserVolume = ReactRef.useMemo(() => Math.max(100, Number(Settings.current.maxUserVolume) || 0), [Settings.current.maxUserVolume]);
+                    const maxStreamVolume = ReactRef.useMemo(() => Math.max(100, Number(Settings.current.maxStreamVolume) || 0), [Settings.current.maxStreamVolume]);
                     
                     const handleVoiceChange = ReactRef.useCallback((val, ctx) => {
                         // Use smooth processor for immediate response
