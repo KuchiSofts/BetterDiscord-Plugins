@@ -2355,7 +2355,7 @@ const main = () => {
                         React.createElement(
                             "p",
                             { className: "soundbooster-setting-description" },
-                            "The initial volume level applied to user streams who don't have custom volume overrides"
+                            "Value shown for stream volume when Discord reports none for that user"
                         ),
                         React.createElement("input", {
                             type: "number",
