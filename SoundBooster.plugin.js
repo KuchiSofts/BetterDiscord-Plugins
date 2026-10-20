@@ -1328,7 +1328,6 @@ const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingS
         const [isSpeaking, setIsSpeaking] = React.useState(false);
         const [isMuted, setIsMuted] = React.useState(false);
         
-        const animationFrameRef = React.useRef(null);
         const peakTimeoutRef = React.useRef(null);
         const levelHistoryRef = React.useRef([]);
         
@@ -1376,8 +1375,8 @@ const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingS
                 
                 const smoothedLevel = levelHistoryRef.current.reduce((a, b) => a + b, 0) / levelHistoryRef.current.length;
                 
-                // Only update state if there's a significant change (reduces re-renders)
-                if (Math.abs(smoothedLevel - audioLevel) > 1) {
+                // Only update state if there's a significant change (reduces re-renders), but always settle at silence
+                if (Math.abs(smoothedLevel - audioLevel) > 1 || (smoothedLevel === 0 && audioLevel !== 0)) {
                     setAudioLevel(smoothedLevel);
                 }
                 
@@ -1397,30 +1396,30 @@ const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingS
             } catch (error) {
                 // Silently handle errors - audio level detection is non-critical
             }
-            
-            // Reduced update frequency: 30fps instead of 60fps for better performance
-            setTimeout(() => {
-                if (animationFrameRef.current) {
-                    animationFrameRef.current = requestAnimationFrame(updateAudioLevels);
-                }
-            }, 33); // ~30fps
         }, [userId, isLocalUser, peakLevel, audioLevel, isSpeaking, isMuted, RTCConnection, SpeakingStore, VoiceStateStore, MediaEngineStore]);
         
-        // Start/stop audio level monitoring
+        // Keep the latest sampler in a ref so the polling loop always sees current state
+        const updateAudioLevelsRef = React.useRef(updateAudioLevels);
+        updateAudioLevelsRef.current = updateAudioLevels;
+        
+        // Start/stop audio level monitoring (~30fps while the meter is mounted)
         React.useEffect(() => {
-            if (Settings.current.showVolumeMeter) {
-                updateAudioLevels();
-            }
+            if (!Settings.current.showVolumeMeter) return;
+            
+            let pollTimeout = null;
+            const poll = () => {
+                updateAudioLevelsRef.current();
+                pollTimeout = setTimeout(poll, 1000 / PLUGIN_CONFIG.VOLUME_METER_FPS);
+            };
+            poll();
             
             return () => {
-                if (animationFrameRef.current) {
-                    cancelAnimationFrame(animationFrameRef.current);
-                }
+                clearTimeout(pollTimeout);
                 if (peakTimeoutRef.current) {
                     clearTimeout(peakTimeoutRef.current);
                 }
             };
-        }, [updateAudioLevels]);
+        }, [userId]);
         
         // Don't render if meter is disabled
         if (!Settings.current.showVolumeMeter) {
@@ -1999,8 +1998,7 @@ const main = () => {
     
     const ReactRef = BdApi.React;
     
-    const VolumeControlComponent = createVolumeControl({ React: ReactRef });
-    
+
     return {
         start() {
             handleVolumeSync();
@@ -2049,7 +2047,7 @@ const main = () => {
                     return ReactRef.createElement(
                         ReactRef.Fragment,
                         null,
-                        ReactRef.createElement(VolumeControlComponent, {
+                        ReactRef.createElement(VolumeControl, {
                             value: voiceVolume,
                             context: "default",
                             min: 0,
@@ -2057,7 +2055,7 @@ const main = () => {
                             onChange: handleVoiceChange,
                             userId
                         }),
-                        ReactRef.createElement(VolumeControlComponent, {
+                        ReactRef.createElement(VolumeControl, {
                             value: streamVolume,
                             context: "stream",
                             min: 0,
