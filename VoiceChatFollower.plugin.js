@@ -171,8 +171,9 @@ const fetchModules = () => {
     SelectedChannelStore = getStore("SelectedChannelStore");
     ChannelStore = getStore("ChannelStore");
     UserStore = getStore("UserStore");
-    Dispatcher = find((m) => m?.dispatch instanceof Function && m?.subscribe instanceof Function && m?.unsubscribe instanceof Function);
-    VoiceChannelActions = find((m) => m?.selectVoiceChannel instanceof Function);
+    // Both are named (non-default) exports in current Discord builds, so search all exports
+    Dispatcher = find((m) => m?.dispatch instanceof Function && m?.subscribe instanceof Function && m?.unsubscribe instanceof Function, { entries: true });
+    VoiceChannelActions = find((m) => m?.selectVoiceChannel instanceof Function, { entries: true });
 };
 
 /* -------------------------------------------------------------------------- */
