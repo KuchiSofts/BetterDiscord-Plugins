@@ -2,7 +2,7 @@
  * @name SoundBooster
  * @author KuchiS
  * @version 2.6.2
- * @description Ultra-smooth volume enhancement plugin that extends Discord's 200% volume limit. Features instant-response volume controls with zero UI blocking, completely non-blocking smart save system, smart save management with anti-spam protection, real-time visual volume meters with peak indicators, and optimized React components for lag-free performance.
+ * @description Lets you set user and stream volumes above Discord's 200% limit, with precise inputs and a live volume meter.
  * @authorLink https://github.com/KuchiSofts
  * @website https://github.com/KuchiSofts/BetterDiscord-Plugins
  * @source https://github.com/KuchiSofts/BetterDiscord-Plugins/blob/main/SoundBooster.plugin.js
@@ -401,6 +401,7 @@ const fetchDiscordModules = () => {
     // Audio level detection modules
     const VoiceStateStore = find(byName("VoiceStateStore"), { cacheKey: "VoiceStateStore" });
     const SpeakingStore = find(byName("SpeakingStore"), { cacheKey: "SpeakingStore" });
+    const UserStore = find(byName("UserStore"), { cacheKey: "UserStore" }) ?? BdApi.Webpack.getStore?.("UserStore");
     
     // Try to find RTC connection for audio levels
     let RTCConnection = null;
@@ -519,6 +520,7 @@ const fetchDiscordModules = () => {
         MediaEngineActions,
         VoiceStateStore,
         SpeakingStore,
+        UserStore,
         RTCConnection,
         React,
         TextInput,
@@ -1317,7 +1319,7 @@ class SmoothVolumeProcessor {
  * @param {Object} params.RTCConnection - RTC connection for audio levels
  * @returns {React.Component} Volume meter component
  */
-const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingStore, RTCConnection }) => {
+const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingStore, UserStore, RTCConnection }) => {
     return React.memo(({ userId }) => {
         const [audioLevel, setAudioLevel] = React.useState(0);
         const [peakLevel, setPeakLevel] = React.useState(0);
@@ -1329,7 +1331,7 @@ const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingS
         const levelHistoryRef = React.useRef([]);
         
         // Get current user ID for local microphone detection
-        const currentUserId = MediaEngineStore?.getCurrentUser?.()?.id;
+        const currentUserId = UserStore?.getCurrentUser?.()?.id;
         const isLocalUser = userId === currentUserId;
         
         // Optimized audio level detection with reduced CPU usage
@@ -1350,7 +1352,7 @@ const createVolumeMeter = ({ React, MediaEngineStore, VoiceStateStore, SpeakingS
                 } else {
                     // For remote users, use cached states with less frequent updates
                     const cachedSpeaking = SpeakingStore?.isSpeaking?.(userId) || false;
-                    const voiceState = VoiceStateStore?.getVoiceState?.(userId);
+                    const voiceState = VoiceStateStore?.getVoiceStateForUser?.(userId);
                     
                     speaking = cachedSpeaking;
                     muted = voiceState?.mute || voiceState?.selfMute || false;
@@ -1725,12 +1727,25 @@ const createVolumeControl = ({ React, VolumeMeter, volumeProcessor }) => {
 // Legacy constant reference for backwards compatibility
 const DISCORD_MAX_VOLUME_PERC = VOLUME_CONSTANTS.DISCORD_MAX_PERC;
 
-const applyDefaultVolumeToMembers = (channelId, guildId, MediaEngineStore, MediaEngineActions, AudioConvert) => {
-    if (!channelId) return;
+/**
+ * Returns the user IDs currently connected to a voice channel, excluding the local user.
+ * Uses VoiceStateStore.getVoiceStatesForChannel (an object keyed by user ID).
+ */
+const getVoiceChannelMemberIds = (channelId, VoiceStateStore, UserStore) => {
+    const voiceStates = VoiceStateStore?.getVoiceStatesForChannel?.(channelId);
+    if (!voiceStates) return [];
+    const currentUserId = UserStore?.getCurrentUser?.()?.id;
+    return Object.values(voiceStates)
+        .map((state) => state?.userId)
+        .filter((userId) => userId && userId !== currentUserId);
+};
+
+const applyDefaultVolumeToMembers = (channelId, VoiceStateStore, UserStore, MediaEngineActions, AudioConvert) => {
+    if (!channelId || !MediaEngineActions?.setLocalVolume) return;
     
     try {
-        const members = MediaEngineStore.getChannelMembers(channelId, guildId);
-        if (!members || members.length === 0) return;
+        const members = getVoiceChannelMemberIds(channelId, VoiceStateStore, UserStore);
+        if (members.length === 0) return;
         
         const { defaultUserVolume } = Settings.current;
         const cachedAmplitude = AudioConvert.perceptualToAmplitude(defaultUserVolume);
@@ -1812,6 +1827,7 @@ const main = () => {
         MediaEngineActions,
         VoiceStateStore,
         SpeakingStore,
+        UserStore,
         RTCConnection,
         React,
         TextInput,
@@ -1846,6 +1862,7 @@ const main = () => {
         MediaEngineStore, 
         VoiceStateStore, 
         SpeakingStore, 
+        UserStore,
         RTCConnection 
     });
     
@@ -1892,28 +1909,33 @@ const main = () => {
     
     const hasSetVolume = byKeys("AUDIO_SET_LOCAL_VOLUME");
     
+    let voiceChannelTimeout = null;
+    let startupTimeouts = [];
+    let handlersSubscribed = false;
+    
+    const voiceChannelHandler = ({ channelId }) => {
+        // Debounce voice channel changes to reduce overhead
+        clearTimeout(voiceChannelTimeout);
+        voiceChannelTimeout = setTimeout(() => {
+            applyDefaultVolumeToMembers(channelId, VoiceStateStore, UserStore, MediaEngineActions, AudioConvert);
+        }, 100);
+    };
+    
     const handleVolumeSync = () => {
         // Lazy initialization to improve startup performance
         const initializeHandlers = () => {
             Dispatcher.subscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
             logger.log(`Subscribed to USER_SETTINGS_PROTO_UPDATE events`);
             
-            const voiceChannelHandler = ({ channelId, guildId }) => {
-                // Debounce voice channel changes to reduce overhead
-                clearTimeout(voiceChannelHandler.timeout);
-                voiceChannelHandler.timeout = setTimeout(() => {
-                    applyDefaultVolumeToMembers(channelId, guildId, MediaEngineStore, MediaEngineActions, AudioConvert);
-                }, 100);
-            };
-            
             Dispatcher.subscribe("VOICE_CHANNEL_SELECT", voiceChannelHandler);
+            handlersSubscribed = true;
         };
         
         // Initialize handlers after professional delay to prevent blocking startup
-        setTimeout(initializeHandlers, PLUGIN_CONFIG.STARTUP_DELAY_MS);
+        startupTimeouts.push(setTimeout(initializeHandlers, PLUGIN_CONFIG.STARTUP_DELAY_MS));
         
         // Dispatch overrides after initialization with staggered timing
-        setTimeout(dispatchVolumeOverrides, PLUGIN_CONFIG.STARTUP_DELAY_MS * 2);
+        startupTimeouts.push(setTimeout(dispatchVolumeOverrides, PLUGIN_CONFIG.STARTUP_DELAY_MS * 2));
 
         waitFor((exported) => exported.actions && hasSetVolume(exported.actions), { cacheKey: "AudioSettingsManager" }).then(
             (AudioSettingsManager) => {
@@ -1933,8 +1955,17 @@ const main = () => {
     };
     
     const resetVolumeSync = () => {
-        Dispatcher.unsubscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
-        logger.log(`Unsubscribed from USER_SETTINGS_PROTO_UPDATE events`);
+        startupTimeouts.forEach(clearTimeout);
+        startupTimeouts = [];
+        clearTimeout(voiceChannelTimeout);
+        voiceChannelTimeout = null;
+        
+        if (handlersSubscribed) {
+            Dispatcher.unsubscribe("USER_SETTINGS_PROTO_UPDATE", settingsUpdateHandler);
+            Dispatcher.unsubscribe("VOICE_CHANNEL_SELECT", voiceChannelHandler);
+            handlersSubscribed = false;
+            logger.log(`Unsubscribed from USER_SETTINGS_PROTO_UPDATE and VOICE_CHANNEL_SELECT events`);
+        }
         const swapped = trySwapHandler(
             "AUDIO_SET_LOCAL_VOLUME",
             wrappedSettingsManagerHandler,
